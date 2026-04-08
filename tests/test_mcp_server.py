@@ -82,7 +82,8 @@ class TestHandleRequest:
         from mempalace.mcp_server import handle_request
 
         # Create a collection so status works
-        _client, _col = _get_collection(palace_path, create=True); del _client
+        _client, _col = _get_collection(palace_path, create=True)
+        del _client
 
         resp = handle_request(
             {
@@ -102,7 +103,8 @@ class TestHandleRequest:
 class TestReadTools:
     def test_status_empty_palace(self, monkeypatch, config, palace_path, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        _client, _col = _get_collection(palace_path, create=True); del _client
+        _client, _col = _get_collection(palace_path, create=True)
+        del _client
         from mempalace.mcp_server import tool_status
 
         result = tool_status()
@@ -196,7 +198,8 @@ class TestSearchTool:
 class TestWriteTools:
     def test_add_drawer(self, monkeypatch, config, palace_path, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        _client, _col = _get_collection(palace_path, create=True); del _client
+        _client, _col = _get_collection(palace_path, create=True)
+        del _client
         from mempalace.mcp_server import tool_add_drawer
 
         result = tool_add_drawer(
@@ -211,7 +214,8 @@ class TestWriteTools:
 
     def test_add_drawer_duplicate_detection(self, monkeypatch, config, palace_path, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        _client, _col = _get_collection(palace_path, create=True); del _client
+        _client, _col = _get_collection(palace_path, create=True)
+        del _client
         from mempalace.mcp_server import tool_add_drawer
 
         content = "This is a unique test memory about Rust ownership and borrowing."
@@ -313,7 +317,8 @@ class TestKGTools:
 class TestDiaryTools:
     def test_diary_write_and_read(self, monkeypatch, config, palace_path, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        _client, _col = _get_collection(palace_path, create=True); del _client
+        _client, _col = _get_collection(palace_path, create=True)
+        del _client
         from mempalace.mcp_server import tool_diary_write, tool_diary_read
 
         w = tool_diary_write(
@@ -331,7 +336,8 @@ class TestDiaryTools:
 
     def test_diary_read_empty(self, monkeypatch, config, palace_path, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        _client, _col = _get_collection(palace_path, create=True); del _client
+        _client, _col = _get_collection(palace_path, create=True)
+        del _client
         from mempalace.mcp_server import tool_diary_read
 
         r = tool_diary_read(agent_name="Nobody")
