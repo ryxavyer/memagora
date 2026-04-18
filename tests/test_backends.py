@@ -3,12 +3,34 @@ import sqlite3
 import chromadb
 import pytest
 
+from mempalace.backends import (
+    GetResult,
+    PalaceRef,
+    QueryResult,
+    UnsupportedFilterError,
+    available_backends,
+    get_backend,
+)
 from mempalace.backends.chroma import ChromaBackend, ChromaCollection, _fix_blob_seq_ids
 
 
 class _FakeCollection:
-    def __init__(self):
+    """Stand-in for a chromadb.Collection returning raw chroma-shaped dicts."""
+
+    def __init__(self, query_response=None, get_response=None, count_value=7):
         self.calls = []
+        self._query_response = query_response or {
+            "ids": [["a", "b"]],
+            "documents": [["da", "db"]],
+            "metadatas": [[{"wing": "w1"}, {"wing": "w2"}]],
+            "distances": [[0.1, 0.2]],
+        }
+        self._get_response = get_response or {
+            "ids": ["a"],
+            "documents": ["da"],
+            "metadatas": [{"wing": "w1"}],
+        }
+        self._count_value = count_value
 
     def add(self, **kwargs):
         self.calls.append(("add", kwargs))
@@ -16,41 +38,142 @@ class _FakeCollection:
     def upsert(self, **kwargs):
         self.calls.append(("upsert", kwargs))
 
+    def update(self, **kwargs):
+        self.calls.append(("update", kwargs))
+
     def query(self, **kwargs):
         self.calls.append(("query", kwargs))
-        return {"kind": "query"}
+        return self._query_response
 
     def get(self, **kwargs):
         self.calls.append(("get", kwargs))
-        return {"kind": "get"}
+        return self._get_response
 
     def delete(self, **kwargs):
         self.calls.append(("delete", kwargs))
 
     def count(self):
         self.calls.append(("count", {}))
-        return 7
+        return self._count_value
 
 
-def test_chroma_collection_delegates_methods():
+def test_chroma_collection_returns_typed_query_result():
+    fake = _FakeCollection()
+    collection = ChromaCollection(fake)
+
+    result = collection.query(query_texts=["q"])
+
+    assert isinstance(result, QueryResult)
+    assert result.ids == [["a", "b"]]
+    assert result.documents == [["da", "db"]]
+    assert result.metadatas == [[{"wing": "w1"}, {"wing": "w2"}]]
+    assert result.distances == [[0.1, 0.2]]
+    assert result.embeddings is None
+
+
+def test_chroma_collection_returns_typed_get_result():
+    fake = _FakeCollection()
+    collection = ChromaCollection(fake)
+
+    result = collection.get(where={"wing": "w1"})
+
+    assert isinstance(result, GetResult)
+    assert result.ids == ["a"]
+    assert result.documents == ["da"]
+    assert result.metadatas == [{"wing": "w1"}]
+
+
+def test_query_result_empty_preserves_outer_dimension():
+    empty = QueryResult.empty(num_queries=2)
+    assert empty.ids == [[], []]
+    assert empty.documents == [[], []]
+    assert empty.distances == [[], []]
+    assert empty.embeddings is None
+
+
+def test_typed_results_support_dict_compat_access():
+    """Transitional compat shim per base.py — retained until callers migrate to attrs."""
+    result = GetResult(ids=["a"], documents=["da"], metadatas=[{"w": 1}])
+    assert result["ids"] == ["a"]
+    assert result.get("documents") == ["da"]
+    assert result.get("missing", "default") == "default"
+    assert "ids" in result
+    assert "missing" not in result
+
+
+def test_chroma_collection_query_empty_result_preserves_outer_shape():
+    fake = _FakeCollection(
+        query_response={"ids": [], "documents": [], "metadatas": [], "distances": []}
+    )
+    collection = ChromaCollection(fake)
+
+    result = collection.query(query_texts=["q1", "q2"])
+    assert result.ids == [[], []]
+    assert result.documents == [[], []]
+    assert result.distances == [[], []]
+
+
+def test_chroma_collection_rejects_unknown_where_operator():
+    fake = _FakeCollection()
+    collection = ChromaCollection(fake)
+
+    with pytest.raises(UnsupportedFilterError):
+        collection.query(query_texts=["q"], where={"$regex": "foo"})
+
+
+def test_chroma_collection_delegates_writes():
     fake = _FakeCollection()
     collection = ChromaCollection(fake)
 
     collection.add(documents=["d"], ids=["1"], metadatas=[{"wing": "w"}])
     collection.upsert(documents=["u"], ids=["2"], metadatas=[{"room": "r"}])
-    assert collection.query(query_texts=["q"]) == {"kind": "query"}
-    assert collection.get(where={"wing": "w"}) == {"kind": "get"}
     collection.delete(ids=["1"])
     assert collection.count() == 7
 
-    assert fake.calls == [
-        ("add", {"documents": ["d"], "ids": ["1"], "metadatas": [{"wing": "w"}]}),
-        ("upsert", {"documents": ["u"], "ids": ["2"], "metadatas": [{"room": "r"}]}),
-        ("query", {"query_texts": ["q"]}),
-        ("get", {"where": {"wing": "w"}}),
-        ("delete", {"ids": ["1"]}),
-        ("count", {}),
-    ]
+    kinds = [call[0] for call in fake.calls]
+    assert kinds == ["add", "upsert", "delete", "count"]
+
+
+def test_registry_exposes_chroma_by_default():
+    names = available_backends()
+    assert "chroma" in names
+    assert isinstance(get_backend("chroma"), ChromaBackend)
+
+
+def test_registry_unknown_backend_raises():
+    with pytest.raises(KeyError):
+        get_backend("no-such-backend-exists")
+
+
+def test_resolve_backend_priority_order(tmp_path):
+    from mempalace.backends import resolve_backend_for_palace
+
+    # explicit kwarg wins over everything
+    assert resolve_backend_for_palace(explicit="pg", config_value="lance") == "pg"
+    # config value wins over env / default
+    assert resolve_backend_for_palace(config_value="lance", env_value="qdrant") == "lance"
+    # env wins over default
+    assert resolve_backend_for_palace(env_value="qdrant", default="chroma") == "qdrant"
+    # falls back to default
+    assert resolve_backend_for_palace() == "chroma"
+
+
+def test_chroma_detect_matches_palace_with_chroma_sqlite(tmp_path):
+    (tmp_path / "chroma.sqlite3").write_bytes(b"")
+    assert ChromaBackend.detect(str(tmp_path)) is True
+    assert ChromaBackend.detect(str(tmp_path.parent)) is False
+
+
+def test_chroma_backend_accepts_palace_ref_kwarg(tmp_path):
+    palace_path = tmp_path / "palace"
+    backend = ChromaBackend()
+    collection = backend.get_collection(
+        palace=PalaceRef(id=str(palace_path), local_path=str(palace_path)),
+        collection_name="mempalace_drawers",
+        create=True,
+    )
+    assert palace_path.is_dir()
+    assert isinstance(collection, ChromaCollection)
 
 
 def test_chroma_backend_create_false_raises_without_creating_directory(tmp_path):
