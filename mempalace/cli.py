@@ -146,6 +146,48 @@ def cmd_mine(args):
         )
 
 
+def cmd_sweep(args):
+    """Sweep a transcript file or directory.
+
+    The sweeper deduplicates against its own prior writes via
+    deterministic drawer IDs + a timestamp cursor. It does NOT currently
+    coordinate with the file-level miners (miner.py / convo_miner.py) —
+    those produce char-chunked drawers without compatible message
+    metadata, so running both miners may store overlapping content under
+    different IDs.
+    """
+    from .sweeper import sweep, sweep_directory
+
+    palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
+    target = os.path.expanduser(args.target)
+
+    if os.path.isfile(target):
+        result = sweep(target, palace_path)
+        print(
+            f"  Swept {target}: +{result['drawers_added']} new, "
+            f"{result['drawers_already_present']} already present, "
+            f"{result['drawers_skipped']} skipped (< cursor)."
+        )
+    elif os.path.isdir(target):
+        result = sweep_directory(target, palace_path)
+        print(
+            f"  Swept {result['files_succeeded']}/{result['files_attempted']} "
+            f"files from {target}: +{result['drawers_added']} new, "
+            f"{result['drawers_already_present']} already present, "
+            f"{result['drawers_skipped']} skipped (< cursor)."
+        )
+        failures = result.get("failures") or []
+        if failures:
+            print(
+                f"  ⚠ {len(failures)} file(s) failed to sweep — see stderr / logs for details.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+    else:
+        print(f"  ✗ Not a file or directory: {target}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_search(args):
     from .searcher import search, SearchError
 
@@ -547,6 +589,17 @@ def main():
         help="Extraction strategy for convos mode: 'exchange' (default) or 'general' (5 memory types)",
     )
 
+    # sweep
+    p_sweep = sub.add_parser(
+        "sweep",
+        help="Tandem miner: catch anything the primary miner missed "
+        "(message-level, timestamp-coordinated, idempotent)",
+    )
+    p_sweep.add_argument(
+        "target",
+        help="A .jsonl transcript file, or a directory to scan recursively",
+    )
+
     # search
     p_search = sub.add_parser("search", help="Find anything, exact words")
     p_search.add_argument("query", help="What to search for")
@@ -679,6 +732,7 @@ def main():
         "mine": cmd_mine,
         "split": cmd_split,
         "search": cmd_search,
+        "sweep": cmd_sweep,
         "mcp": cmd_mcp,
         "compress": cmd_compress,
         "wake-up": cmd_wakeup,

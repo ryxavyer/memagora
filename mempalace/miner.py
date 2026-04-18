@@ -36,6 +36,7 @@ READABLE_EXTENSIONS = {
     ".jsx",
     ".tsx",
     ".json",
+    ".jsonl",
     ".yaml",
     ".yml",
     ".html",
@@ -62,7 +63,14 @@ SKIP_FILENAMES = {
 CHUNK_SIZE = 800  # chars per drawer
 CHUNK_OVERLAP = 100  # overlap between chunks
 MIN_CHUNK_SIZE = 50  # skip tiny chunks
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB — skip files larger than this
+MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB — skip files larger than this.
+# Long Claude Code sessions and large transcript exports routinely exceed
+# 10 MB. The cap exists as a defensive rail against pathological binary
+# files, not as a limit on legitimate text. Per-drawer size is bounded
+# by CHUNK_SIZE, but larger sources still produce proportionally more
+# drawers and therefore more storage, embedding, and processing work —
+# and file reads are not streamed (the whole content is loaded into
+# memory before chunking), so memory use scales with source size too.
 
 
 # =============================================================================
