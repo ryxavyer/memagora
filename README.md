@@ -1,31 +1,12 @@
-> [!CAUTION]
-> **Scam alert.** The only official sources for MemPalace are this
-> [GitHub repository](https://github.com/MemPalace/mempalace), the
-> [PyPI package](https://pypi.org/project/mempalace/), and the docs site at
-> **[mempalaceofficial.com](https://mempalaceofficial.com)**. Any other
-> domain — including `mempalace.tech` — is an impostor and may distribute
-> malware. Details and timeline: [docs/HISTORY.md](docs/HISTORY.md).
+# MemAgora
 
-<div align="center">
-
-<img src="assets/mempalace_logo.png" alt="MemPalace" width="240">
-
-# MemPalace
-
-Local-first AI memory. Verbatim storage, pluggable backend, 96.6% R@5 raw on LongMemEval — zero API calls.
-
-[![][version-shield]][release-link]
-[![][python-shield]][python-link]
-[![][license-shield]][license-link]
-[![][discord-shield]][discord-link]
-
-</div>
+Local-first AI agent memory with key concept extraction for teams. Verbatim local storage, pluggable backend, 96.6% R@5 raw on LongMemEval.
 
 ---
 
 ## What it is
 
-MemPalace stores your conversation history as verbatim text and retrieves
+MemAgora stores your conversation history as verbatim text and retrieves
 it with semantic search. It does not summarize, extract, or paraphrase.
 The index is structured — people and projects become *wings*, topics
 become *rooms*, and original content lives in *drawers* — so searches
@@ -37,9 +18,6 @@ and alternative backends can be dropped in without touching the rest of
 the system.
 
 Nothing leaves your machine unless you opt in.
-
-Architecture, concepts, and mining flows:
-[mempalaceofficial.com/concepts/the-palace](https://mempalaceofficial.com/concepts/the-palace.html).
 
 ---
 
@@ -179,13 +157,3 @@ PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-<!-- Link Definitions -->
-[version-shield]: https://img.shields.io/badge/version-3.3.3-4dc9f6?style=flat-square&labelColor=0a0e14
-[release-link]: https://github.com/MemPalace/mempalace/releases
-[python-shield]: https://img.shields.io/badge/python-3.9+-7dd8f8?style=flat-square&labelColor=0a0e14&logo=python&logoColor=7dd8f8
-[python-link]: https://www.python.org/
-[license-shield]: https://img.shields.io/badge/license-MIT-b0e8ff?style=flat-square&labelColor=0a0e14
-[license-link]: https://github.com/MemPalace/mempalace/blob/main/LICENSE
-[discord-shield]: https://img.shields.io/badge/discord-join-5865F2?style=flat-square&labelColor=0a0e14&logo=discord&logoColor=5865F2
-[discord-link]: https://discord.com/invite/ycTQQCu6kn

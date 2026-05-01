@@ -1,17 +1,17 @@
 {
-  "name": "mempalace",
+  "name": "memagora",
   "owner": {
-    "name": "milla-jovovich",
-    "url": "https://github.com/MemPalace"
+    "name": "ryan-fernandez",
+    "url": "https://github.com/ryxavyer/memagora"
   },
   "plugins": [
     {
-      "name": "mempalace",
+      "name": "memagora",
       "source": "./.claude-plugin",
-      "description": "AI memory system — mine projects and conversations into a searchable palace. 19 MCP tools, auto-save hooks, guided setup.",
-      "version": "3.3.3",
+      "description": "Give your AI a memory — mine projects and conversations into a searchable palace. Automated institutional knowledge extraction for teams. 19 MCP tools, auto-save hooks, and guided setup.",
+      "version": "1.0.0",
       "author": {
-        "name": "milla-jovovich"
+        "name": "ryan-fernandez"
       }
     }
   ]

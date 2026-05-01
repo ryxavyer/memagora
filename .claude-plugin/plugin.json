@@ -1,15 +1,15 @@
 {
-  "name": "mempalace",
-  "version": "3.3.3",
-  "description": "Give your AI a memory — mine projects and conversations into a searchable palace. 19 MCP tools, auto-save hooks, and guided setup.",
+  "name": "memagora",
+  "version": "1.0.0",
+  "description": "Give your AI a memory — mine projects and conversations into a searchable palace. Automated institutional knowledge extraction for teams. 19 MCP tools, auto-save hooks, and guided setup.",
   "author": {
-    "name": "milla-jovovich"
+    "name": "ryan-fernandez"
   },
   "license": "MIT",
   "commands": [],
   "mcpServers": {
     "mempalace": {
-      "command": "mempalace-mcp"
+      "command": "memagora-mcp"
     }
   },
   "keywords": [
@@ -19,7 +19,8 @@
     "mcp",
     "chromadb",
     "palace",
+    "agora",
     "search"
   ],
-  "repository": "https://github.com/MemPalace/mempalace"
+  "repository": "https://github.com/ryxavyer/memagora"
 }

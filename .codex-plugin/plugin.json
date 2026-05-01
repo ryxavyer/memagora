@@ -1,12 +1,12 @@
 {
-  "name": "mempalace",
-  "version": "3.3.3",
-  "description": "Give your AI a memory — mine projects and conversations into a searchable palace. 19 MCP tools, auto-save hooks, and guided setup.",
+  "name": "memagora",
+  "version": "1.0.0",
+  "description": "Give your AI a memory — mine projects and conversations into a searchable palace. Automated institutional knowledge extraction for teams. 19 MCP tools, auto-save hooks, and guided setup.",
   "author": {
-    "name": "milla-jovovich"
+    "name": "ryan-fernandez"
   },
-  "homepage": "https://github.com/MemPalace/mempalace",
-  "repository": "https://github.com/MemPalace/mempalace",
+  "homepage": "https://github.com/ryxavyer/memagora",
+  "repository": "https://github.com/ryxavyer/memagora",
   "license": "MIT",
   "keywords": [
     "memory",
@@ -15,33 +15,36 @@
     "mcp",
     "chromadb",
     "palace",
+    "agora",
     "search"
   ],
   "skills": "./skills/",
   "hooks": "./hooks.json",
   "mcpServers": {
-    "mempalace": {
-      "command": "mempalace-mcp"
+    "memagora": {
+      "command": "memagora-mcp"
     }
   },
   "interface": {
-    "displayName": "MemPalace",
+    "displayName": "MemAgora",
     "shortDescription": "AI memory system for Codex",
-    "longDescription": "Give your AI a persistent memory — mine projects and conversations into a searchable palace backed by ChromaDB, with 19 MCP tools, auto-save hooks, and guided skills.",
-    "developerName": "milla-jovovich",
+    "longDescription": "Give your AI a persistent memory — mine projects and conversations into a searchable palace backed by ChromaDB, with 19 MCP tools, auto-save hooks, and guided skills. Automated institutional knowledge extraction for teams.",
+    "developerName": "ryan-fernandez",
     "category": "Coding",
     "capabilities": [
       "Interactive",
       "Read",
       "Write"
     ],
-    "websiteURL": "https://github.com/MemPalace/mempalace",
-    "privacyPolicyURL": "https://github.com/MemPalace/mempalace",
-    "termsOfServiceURL": "https://github.com/MemPalace/mempalace",
+    "websiteURL": "https://github.com/ryxavyer/memagora",
+    "privacyPolicyURL": "https://github.com/ryxavyer/memagora",
+    "termsOfServiceURL": "https://github.com/ryxavyer/memagora",
     "defaultPrompt": [
       "Search my memories for recent decisions",
       "Mine this project into my memory palace",
-      "Show my palace status and room counts"
+      "Show my palace status and room counts",
+      "Search for established style in the agora",
+      "See if the agora explains why this is designed this way"
     ],
     "brandColor": "#7C3AED"
   }

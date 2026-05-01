@@ -1,12 +1,12 @@
 ---
-name: mempalace
-description: MemPalace — mine projects and conversations into a searchable memory palace. Use when asked about mempalace, memory palace, mining memories, searching memories, or palace setup.
+name: memagora
+description: MemAgora — mine projects and conversations into a searchable memory palace. Automated institutional knowledge extraction for teams. Use when asked about memagora, memory palace, mining memories, searching memories, agora data, or palace setup.
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep
 ---
 
-# MemPalace
+# MemAgora
 
-A searchable memory palace for AI — mine projects and conversations, then search them semantically.
+A searchable memory palace for AI and curated institutional knowledge — mine projects and conversations, then search them semantically.
 
 ## Prerequisites
 

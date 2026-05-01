@@ -1,99 +1,140 @@
-# CLAUDE.md
+# AGENTS.md
 
-## The Mission
+## Project Overview
 
-Memory is identity. When an AI forgets everything between conversations, it cannot build real understanding — of you, your work, your people, your life.
+This repository is **MemAgora** — a team knowledge graph layer built on a stripped-down fork of [MemPalace](https://github.com/MemPalace/mempalace), a local-first AI memory system.
 
-MemPalace exists to solve this. It is a memory system — not a search engine, not a RAG pipeline, not a vector database wrapper. It treats every word you have shared as sacred, stores it verbatim, and makes it instantly available. Your data never leaves your machine. We never summarize. We never paraphrase. We return your exact words.
+MemPalace solves the problem of an individual engineer's reasoning, debates, and decisions evaporating between Claude Code sessions. MemAgora solves the problem of that context evaporating between engineers. Institutional knowledge that lived inside that AI session now lives somewhere a teammate can reach.
 
-100% recall is the design requirement — the target every search path is measured against. Anything less means forgetting, and forgetting means starting over.
+The core thesis: context saved in the palace improves the agent experience for the developer and context saved in the agora improves the agent experience for the whole team. Both can happen simultaneously while you work.
 
-The name comes from the ancient "method of loci" — the memory palace technique used for thousands of years to organize and recall vast amounts of information by placing it in imagined rooms of an imagined building. We were also inspired by the Zettelkasten method (created by German sociologist Niklas Luhmann) — small cross-referenced index cards that point to each other. We apply both ideas to AI memory:
+## What MemAgora Inherits From MemPalace (And What It Doesn't)
 
-- **Wings** for broad categories (people, projects, topics)
-- **Rooms** for time-based groupings (days, sessions)
-- **Drawers** for full verbatim content (your exact words)
-- **AAAK compression** for the index layer — a compact symbolic format (via `dialect.py`) that lets an LLM scan thousands of entries instantly and know exactly which drawer to open
+MemAgora is **selectively** built on MemPalace, not faithfully derived from it. Two things are worth keeping; much of the rest is not.
+
+**What MemAgora inherits and depends on:**
+
+- **Agent interface plumbing** — The MCP server, Claude Code hooks, conversation format parsers (Claude/ChatGPT/Codex/Slack), ChromaDB integration, and CLI dispatcher. This is real engineering work that would take weeks to rebuild and isn't algorithmically interesting to redo.
+- **The organizational metaphor** — Wings, rooms, and drawers as a human-comprehensible mental model for navigating memory. This isn't an accuracy improvement over flat vector search (ChromaDB's defaults handle retrieval well on their own). The value is in *navigability and scoping* — an agent can search "how did we handle rate limiting" within a specific wing rather than against all of memory. Different problem than retrieval accuracy, real value.
+
+**What MemAgora does not inherit, and will likely strip:**
+
+- **AAAK compression dialect** — Demonstrated 12.4% accuracy regression for compression that doesn't reliably save tokens at the scales engineers actually operate at. Not load-bearing for MemAgora. Candidate for removal.
+- **Layer 1 "Essential Story" importance scoring** — Sorts by metadata that the mining pipeline never sets, making the output effectively random order. Broken in MemPalace, not used by MemAgora. Candidate for removal.
+- **Substring-as-fuzzy-matching** — `palace_graph.py:_fuzzy_match` is `in` operator wrapped in misleading naming. Not used by MemAgora.
+- **Hardcoded dedup statistics** — `dedup.py` estimates duplicates as `int(len(ids) * 0.4)` rather than computing them. Cosmetic in MemPalace, not used by MemAgora.
+- **MemPalace's marketing claims** — The 96.6% LongMemEval score is largely ChromaDB's default behavior. The "memory palace architecture" is metadata strings on ChromaDB documents. MemAgora's value proposition is institutional memory, not benchmark performance, so none of this matters here.
+
+**Trajectory:** Over time, MemPalace's footprint in MemAgora is expected to shrink. The plumbing stays. The organizational metaphor stays. Layers that don't earn their keep get stripped or replaced as MemAgora matures. The repo today inherits more of MemPalace than it will a year from now, and that's intentional.
+
+> **For details on the MemPalace foundation as it currently exists in this repo — including which subsystems MemAgora actively uses, which it ignores, and which are candidates for removal — see [FOUNDATION.md](./FOUNDATION.md).**
+
+## Mental Model
+
+- Palace — your private memory. Verbatim, local, sovereign. Your raw stream of consciousness.
+- Agora — the public square. Structured facts extracted from individual palaces and shared across the team. Curated, not raw.
+
+The name comes from the Greek agora — the public square where citizens chose to bring ideas for collective benefit. The word "chose" matters. The classifier respects engineer sovereignty by gating what propagates from palace to agora. Raw verbatim chunks stay private. Only structured, team-relevant facts cross the boundary.
 
 ## Design Principles
 
-These are non-negotiable. Every PR, every feature, every refactor must honor them.
+MemAgora inherits two MemPalace principles in modified form, and adds its own:
 
-- **Verbatim always** — Never summarize, paraphrase, or lossy-compress user data. The system searches the index and returns the original words. If a user said it, we store exactly what they said. This is the foundational promise.
-- **Incremental only** — Append-only ingest after initial build. Never destroy existing data to rebuild. A crash mid-operation must leave the existing palace untouched.
-- **Entity-first** — Everything is keyed by real names with disambiguation by DOB, ID, or context. People matter more than topics.
-- **Local-first, zero external API by default** — All extraction, chunking, embedding, and LLM-assisted refinement happens on the user's machine by default, using locally-hosted runtimes (Ollama, LM Studio, llama.cpp, vLLM, unsloth studio, etc.). External providers (Anthropic, OpenAI, Google) are supported via BYOK but are never required and never enabled silently. The system never sends user content to a service the user has not explicitly configured. "Local LLM" is not an external API — Ollama and equivalents running on localhost are part of the user's machine. External BYOK is always a deliberate user choice, never a default and never a silent fallback.
-- **Performance budgets** — Hooks under 500ms. Startup injection under 100ms. Memory should feel instant.
-- **Privacy by architecture** — The system physically cannot send your data because it never leaves your machine. No telemetry, no phone-home, no external service dependencies for core operations.
-- **Background everything** — Filing, indexing, timestamps, and pipeline work happen via hooks in the background. Nothing interrupts the user's conversation. Zero tokens spent on bookkeeping in the chat window.
+**Inherited (selectively):**
 
-## Contributing
+- **Local-first for the palace** — The engineer's local palace stores raw verbatim content and never sends it anywhere. MemAgora introduces a single explicit, configured network call to a team agora server — but that call carries only classified, structured facts, never raw user content. The local-first guarantee for the palace itself is intact.
+- **Verbatim for raw storage** — Where MemAgora touches MemPalace's raw storage layer, the verbatim guarantee is preserved. MemAgora does not summarize raw conversation chunks.
 
-We welcome bug fixes, performance improvements, new language support, better entity disambiguation, documentation, and test coverage.
+**MemAgora-specific:**
 
-We do not accept summarization of user content, cloud storage/sync features, telemetry or analytics, features requiring API keys for core memory, or shortcuts that bypass verbatim storage.
+- **Engineer sovereignty** — The local palace is private and stays private. MemAgora never reads or transmits raw verbatim chunks. It only propagates structured, classified facts the engineer's session produced. If in doubt, the fact stays in the palace.
+- **Audit by default** — Every fact written to the team agora is mirrored to a local audit log the engineer can inspect. Engineers must always be able to see what left their machine.
+- **Per-deployment isolation** — Each team or project group runs an independent MemAgora deployment with its own database. Project A's agora and Project B's agora share code but never share data or infrastructure.
+- **Structured, not raw** — The agora stores knowledge graph triples with temporal validity. Decisions, contracts, deprecations. Never raw conversation chunks.
+- **Optional, never invasive** — MemAgora is opt-in at the engineer level. An engineer can use MemPalace without MemAgora. The local experience is unchanged whether MemAgora is configured or not.
+- **No silent network calls** — The only network call MemAgora makes is the explicit POST to the engineer's configured agora endpoint. No telemetry, no analytics, no fallback endpoints.
 
-## Setup
+**Not inherited:** MemPalace's broader claims about 100% recall, the "method of loci" framing, and the implication that the wing/room/drawer structure produces algorithmic improvement in retrieval. These are MemPalace's framing, not MemAgora's commitments.
 
-```bash
-pip install -e ".[dev]"
-```
+## Architectural Approach
 
-## Commands
+MemAgora is designed as a **deployable template** — the same codebase, deployed independently per team. Three layers, all swappable:
 
-```bash
-# Run tests
-python -m pytest tests/ -v --ignore=tests/benchmarks
+    Engineer's local palace (MemPalace plumbing, MemAgora-curated)
+           │
+           ▼
+    MemAgora Classifier ──── classifier prompt configurable per deployment
+           │
+           ▼
+    MemAgora Backend ─────── HTTP client posting to a configured endpoint
+           │
+           ▼
+    Team Agora Server ────── pluggable storage layer (Postgres default,
+                             deployable swap for other backends)
 
-# Run tests with coverage
-python -m pytest tests/ -v --ignore=tests/benchmarks --cov=mempalace --cov-report=term-missing
+The integration with MemPalace happens through MemPalace's pluggable backend interface (`mempalace/backends/base.py`). MemAgora ships a backend implementation that wraps the default ChromaDB backend, performs the normal local write, and additionally invokes the classifier on team-relevant content. Classified facts are POSTed to the configured agora server.
 
-# Lint
-ruff check .
+The agora server itself is a separate deployable unit. Each team stands up their own instance. The server's storage layer is also abstracted — Postgres is the default and reference implementation, but a team should be able to swap in MySQL, a different KG store, or whatever fits their existing infrastructure.
 
-# Format
-ruff format .
+The core invariant: **regardless of deployment configuration, the engineer's local palace experience is unchanged**. MemAgora additions are strictly additive at the local level.
 
-# Format check (CI mode)
-ruff format --check .
-```
+## Open Architectural Decisions
 
-## Project Structure
+These are deliberately unresolved as of this writing. This document should be updated as they're decided:
 
-```
-mempalace/
-├── mcp_server.py        # MCP server — all read/write tools
-├── cli.py               # CLI dispatcher
-├── config.py            # Configuration + input validation
-├── miner.py             # Project file miner
-├── convo_miner.py       # Conversation transcript miner
-├── searcher.py          # Semantic search (hybrid BM25 + vector)
-├── knowledge_graph.py   # Temporal entity-relationship graph (SQLite)
-├── palace.py            # Shared palace operations
-├── palace_graph.py      # Room traversal + cross-wing tunnels
-├── backends/            # Pluggable storage backends (ChromaDB default)
-│   ├── base.py          # Abstract interface — implement this for new backends
-│   └── chroma.py        # ChromaDB implementation
-├── dialect.py           # AAAK compression dialect
-├── normalize.py         # Transcript format detection + normalization
-├── entity_detector.py   # Auto-detect people/projects from content
-├── entity_registry.py   # Entity storage and disambiguation
-├── layers.py            # L0-L3 memory wake-up stack
-├── onboarding.py        # Interactive first-run setup
-├── repair.py            # Palace repair and consistency checks
-├── dedup.py             # Deduplication
-├── migrate.py           # ChromaDB version migration
-├── spellcheck.py        # Auto-correct user messages
-├── exporter.py          # Palace data export
-├── hooks_cli.py         # Hook management CLI
-├── query_sanitizer.py   # Prompt contamination prevention
-├── split_mega_files.py  # Split concatenated transcript files
-└── version.py           # Single source of truth for version
+- **Server framework** — FastAPI is the leading candidate (Python consistency with MemPalace, lightweight, async). Go is under consideration for single-binary deployment simplicity. No commitment yet.
+- **Database** — Postgres is the leading candidate for the reference implementation. The pluggable layer should not assume Postgres specifically.
+- **Hook vs backend integration** — Backend extension via `mempalace/backends/base.py` is the leading approach. The PreCompact hook may still need lightweight handling separately. Backend stability across MemPalace versions is a known risk; see "Known Risks" below.
+- **Subsystem pruning** — Which MemPalace subsystems to actively strip vs. leave dormant. AAAK and Layer 1 importance scoring are likely candidates for removal as the codebase matures, but not on day one. See [FOUNDATION.md](./FOUNDATION.md) for the current state.
 
-hooks/                   # Claude Code hook scripts
-├── mempal_save_hook.sh        # Stop: triggers diary save
-└── mempal_precompact_hook.sh  # PreCompact: saves state before compression
-```
+## MemAgora Project Structure (Planned)
+
+    memagora/
+    ├── palace/
+    │   ├── __init__.py
+    │   ├── backend.py          # MemPalace backend implementation
+    │   ├── classifier.py       # Local-vs-team classification
+    │   ├── client.py           # HTTP client for posting to agora server
+    │   ├── audit.py            # Local audit log of team writes
+    │   └── config.py           # Endpoint, API key, classifier prompt
+    ├── agora/                 # Deployable agora server
+    │   ├── api/                # HTTP endpoints
+    │   ├── models/             # Knowledge graph schema
+    │   ├── storage/            # Pluggable storage backends
+    │   ├── Dockerfile
+    │   └── docker-compose.yml
+    ├── docs/
+    │   ├── architecture.md
+    │   ├── deployment.md
+    │   └── classifier-tuning.md
+    └── tests/
+
+> **MemPalace's source structure — including which parts MemAgora actively uses — is documented in [FOUNDATION.md](./FOUNDATION.md).**
+
+## Key Files for MemAgora Tasks
+
+- **Classifier logic**: `memagora/classifier.py` — prompt and post-processing
+- **Backend integration with MemPalace**: `memagora/backend.py` — implements `mempalace/backends/base.py` interface
+- **Server endpoints**: `server/api/`
+- **Storage abstraction**: `server/storage/` — implement new backend by subclassing the abstract storage interface
+- **Deployment config**: `server/docker-compose.yml` — reference deployment
+
+For tasks involving the inherited MemPalace plumbing (mining, search, the local palace itself), refer to [FOUNDATION.md](./FOUNDATION.md).
+
+## Known Risks
+
+- **Upstream churn** — MemPalace is young and shipping fast. Backend interface changes between versions could break MemAgora. Mitigation: pin MemPalace version, test before bumping, maintain a `mempalace-master` branch for tracking upstream cleanly.
+- **Classifier quality** — The classifier prompt is the core novel piece of MemAgora and is inherently context-dependent. A poorly-tuned classifier either propagates noise or starves the agora. Each deployment will need to iterate on its prompt against real usage.
+- **Privacy expectations** — Engineers need confidence that the local-vs-team boundary is real. A single incident of raw content reaching the agora would damage trust. The classifier's default behavior must be conservative — when uncertain, content stays local.
+- **Inherited brittleness** — Several known bugs and design issues exist in the MemPalace code MemAgora inherits. Most do not affect MemAgora directly because the affected subsystems aren't on MemAgora's path. See [FOUNDATION.md](./FOUNDATION.md) for the audit and the current strip/keep status of each subsystem.
+
+## Working Notes for Coding Agents
+
+- The codebase today contains substantial MemPalace code that MemAgora doesn't actively use. Treat it as legacy infrastructure being maintained for the parts MemAgora does use, not as authoritative reference.
+- MemAgora additions live primarily in `memagora/` and `server/`. New code goes there.
+- When modifying inherited MemPalace files, check [FOUNDATION.md](./FOUNDATION.md) first to understand whether the file is on MemAgora's path or vestigial. Modifications to vestigial code are usually unnecessary.
+- Bug fixes that improve genuinely-used MemPalace plumbing should be considered for upstream contribution back to MemPalace via the `upstream` git remote. Bug fixes to subsystems MemAgora has marked for removal are not worth contributing — strip them locally instead.
+- MemAgora's novel logic — classifier prompts, server endpoints, storage abstractions — stays in this repository and is not contributed upstream.
 
 ## Conventions
 
@@ -104,30 +145,23 @@ hooks/                   # Claude Code hook scripts
 - **Tests**: `tests/test_*.py`, fixtures in `tests/conftest.py`
 - **Coverage**: 85% threshold (80% on Windows due to ChromaDB file lock cleanup)
 
-## Architecture
+## Setup
 
-```
-User → CLI / MCP Server → Storage Backend (ChromaDB default, pluggable)
-                        → SQLite (knowledge graph)
+    pip install -e ".[dev]"
 
-Palace structure:
-  WING (person/project)
-    └── ROOM (day/topic)
-          └── DRAWER (verbatim text chunk)
+## Commands
 
-Index layer (AAAK):
-  Compressed pointers → DRAWER locations
-  Scanned by LLM to find relevant drawers without reading all content
+    # Run tests
+    python -m pytest tests/ -v --ignore=tests/benchmarks
 
-Knowledge Graph:
-  ENTITY → PREDICATE → ENTITY (with valid_from / valid_to dates)
-```
+    # Run tests with coverage
+    python -m pytest tests/ -v --ignore=tests/benchmarks --cov=mempalace --cov-report=term-missing
 
-## Key Files for Common Tasks
+    # Lint
+    ruff check .
 
-- **Adding an MCP tool**: `mempalace/mcp_server.py` — add handler function + TOOLS dict entry
-- **Changing search**: `mempalace/searcher.py`
-- **Modifying mining**: `mempalace/miner.py` (project files) or `mempalace/convo_miner.py` (transcripts)
-- **Adding a storage backend**: subclass `mempalace/backends/base.py`, register in `backends/__init__.py`
-- **Input validation**: `mempalace/config.py` — `sanitize_name()` / `sanitize_content()`
-- **Tests**: mirror source structure in `tests/test_<module>.py`
+    # Format
+    ruff format .
+
+    # Format check (CI mode)
+    ruff format --check .

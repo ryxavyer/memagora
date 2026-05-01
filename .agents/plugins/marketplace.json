@@ -1,11 +1,11 @@
 {
-  "name": "mempalace",
+  "name": "memagora",
   "interface": {
-    "displayName": "MemPalace"
+    "displayName": "MemAgora"
   },
   "plugins": [
     {
-      "name": "mempalace",
+      "name": "memagora",
       "source": {
         "source": "local",
         "path": "./.codex-plugin"
