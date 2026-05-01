@@ -2,9 +2,11 @@
 
 > This document describes **MemPalace** — the local-first AI memory system whose code MemAgora is built on top of — with explicit annotations about which parts MemAgora actively uses, which are dormant, and which are candidates for removal.
 >
-> For information about MemAgora itself, see [CLAUDE.md](./CLAUDE.md).
+> For information about MemAgora itself, see [AGENTS.md](./AGENTS.md). For the rename schedule and target structure, see [ROADMAP.md](./ROADMAP.md).
 >
 > **This is not a faithful reference to MemPalace as its authors describe it.** It is a reference to the parts of MemPalace's code that exist in this repo and how MemAgora relates to each of them. MemPalace's broader claims about retrieval accuracy, the "method of loci," and benchmark performance are not commitments MemAgora makes.
+>
+> **Directory naming, today vs target:** the inherited foundation lives at `mempalace/` today and is renamed to `palace/` at v1.0 (deferred to keep upstream cherry-picking cheap). At the rename, MemAgora-specific files added pre-v1.0 (classifier, client, audit, etc., currently inside `mempalace/`) stay in place — only the directory name changes. The post-rename `palace/` directory is everything engineer-side: foundation plus MemAgora additions, installed together. All file paths in this document use the current `mempalace/` prefix because that's what's on disk. Post-rename, mentally substitute `palace/` everywhere.
 
 ## What MemPalace Actually Provides
 

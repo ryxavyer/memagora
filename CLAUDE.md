@@ -87,37 +87,60 @@ These are deliberately unresolved as of this writing. This document should be up
 - **Hook vs backend integration** — Backend extension via `mempalace/backends/base.py` is the leading approach. The PreCompact hook may still need lightweight handling separately. Backend stability across MemPalace versions is a known risk; see "Known Risks" below.
 - **Subsystem pruning** — Which MemPalace subsystems to actively strip vs. leave dormant. AAAK and Layer 1 importance scoring are likely candidates for removal as the codebase matures, but not on day one. See [FOUNDATION.md](./FOUNDATION.md) for the current state.
 
-## MemAgora Project Structure (Planned)
+## MemAgora Project Structure (Target)
 
-    memagora/
-    ├── palace/
-    │   ├── __init__.py
-    │   ├── backend.py          # MemPalace backend implementation
-    │   ├── classifier.py       # Local-vs-team classification
-    │   ├── client.py           # HTTP client for posting to agora server
-    │   ├── audit.py            # Local audit log of team writes
-    │   └── config.py           # Endpoint, API key, classifier prompt
-    ├── agora/                 # Deployable agora server
-    │   ├── api/                # HTTP endpoints
-    │   ├── models/             # Knowledge graph schema
-    │   ├── storage/            # Pluggable storage backends
-    │   ├── Dockerfile
-    │   └── docker-compose.yml
-    ├── docs/
+Two top-level code directories matching the two deployment units, plus a neutral `contracts/` for the shared HTTP schema:
+
+    palace/                  # Engineer-side: foundation + MemAgora additions, all installed together
+    ├── __init__.py
+    ├── (audited, pruned MemPalace foundation per FOUNDATION.md —
+    │    mcp_server.py, miner.py, searcher.py, backends/, …)
+    ├── backend.py           # Wraps palace.backends.chroma with classifier integration
+    ├── classifier.py        # Local-vs-team classification
+    ├── client.py            # HTTP client posting to agora server
+    ├── audit.py             # Local append-only audit log of team writes
+    ├── config.py            # Endpoint, API key, classifier prompt (merged with inherited config at rename)
+    └── core.py              # Was palace.py; renamed to avoid the palace/palace.py collision
+    
+    agora/                   # Deployable team server (separate dependency profile)
+    ├── api/                 # HTTP endpoints
+    ├── models/              # Knowledge graph schema
+    ├── storage/             # Pluggable storage backends (Postgres reference)
+    ├── Dockerfile
+    ├── docker-compose.yml
+    └── pyproject.toml       # Own package — engineer-side installs don't pull FastAPI/Postgres
+    
+    contracts/               # Wire format shared between palace and agora
+    ├── __init__.py
+    ├── facts.py             # Fact payload schema
+    ├── api.py               # Request/response shapes
+    └── pyproject.toml       # Independently versioned; third-party clients can install just this
+    
+    hooks/                   # Claude Code hooks (env vars renamed at v1.0)
+    docs/
     │   ├── architecture.md
     │   ├── deployment.md
     │   └── classifier-tuning.md
-    └── tests/
+    tests/
 
-> **MemPalace's source structure — including which parts MemAgora actively uses — is documented in [FOUNDATION.md](./FOUNDATION.md).**
+**Why this layout:** every top-level directory maps to a deployable unit (`palace` ships to engineers, `agora` ships to teams) or a versioning boundary (`contracts` versions independently for rolling-deploy compatibility). "memagora" is the project / repo / CLI name — not a code directory. The inherited-vs-original boundary that earlier drafts captured as a directory split (`mempalace/` + `memagora/`) is captured instead by per-file provenance headers added during the v1.0 rename. That boundary is historical, not architectural.
+
+**Today vs target:** the directory is currently `mempalace/`, not `palace/`. Rename is deliberately deferred to v1.0 to keep upstream cherry-picking cheap. Pre-rename, new MemAgora-specific code lands inside `mempalace/` directly (with `_agora` suffixes for files that collide with inherited names — those suffixes drop at the rename). See [ROADMAP.md](./ROADMAP.md) for full rename mechanics.
+
+> **The audit of which inherited subsystems are on MemAgora's path versus dormant is in [FOUNDATION.md](./FOUNDATION.md).**
 
 ## Key Files for MemAgora Tasks
 
-- **Classifier logic**: `memagora/classifier.py` — prompt and post-processing
-- **Backend integration with MemPalace**: `memagora/backend.py` — implements `mempalace/backends/base.py` interface
-- **Server endpoints**: `server/api/`
-- **Storage abstraction**: `server/storage/` — implement new backend by subclassing the abstract storage interface
-- **Deployment config**: `server/docker-compose.yml` — reference deployment
+Paths below use the target post-rename structure. Until v1.0, substitute `mempalace/` for `palace/`.
+
+- **Classifier logic**: `palace/classifier.py` — prompt and post-processing
+- **Backend integration**: `palace/backend.py` — implements `palace/backends/base.py`, wraps `palace/backends/chroma.py`
+- **HTTP client to agora**: `palace/client.py`
+- **Local audit log**: `palace/audit.py`
+- **Wire format / shared contracts**: `contracts/` — fact payload, API request/response shapes; imported by both palace and agora
+- **Server endpoints**: `agora/api/`
+- **Storage abstraction**: `agora/storage/` — implement new backend by subclassing the abstract storage interface
+- **Deployment config**: `agora/docker-compose.yml` — reference deployment
 
 For tasks involving the inherited MemPalace plumbing (mining, search, the local palace itself), refer to [FOUNDATION.md](./FOUNDATION.md).
 
@@ -131,7 +154,7 @@ For tasks involving the inherited MemPalace plumbing (mining, search, the local 
 ## Working Notes for Coding Agents
 
 - The codebase today contains substantial MemPalace code that MemAgora doesn't actively use. Treat it as legacy infrastructure being maintained for the parts MemAgora does use, not as authoritative reference.
-- MemAgora additions live primarily in `memagora/` and `server/`. New code goes there.
+- MemAgora-specific additions live in `palace/` (engineer-side), `agora/` (server), and `contracts/` (shared wire format). Pre-rename, engineer-side additions land inside `mempalace/` directly — see [ROADMAP.md](./ROADMAP.md) for the rename mechanics.
 - When modifying inherited MemPalace files, check [FOUNDATION.md](./FOUNDATION.md) first to understand whether the file is on MemAgora's path or vestigial. Modifications to vestigial code are usually unnecessary.
 - Bug fixes that improve genuinely-used MemPalace plumbing should be considered for upstream contribution back to MemPalace via the `upstream` git remote. Bug fixes to subsystems MemAgora has marked for removal are not worth contributing — strip them locally instead.
 - MemAgora's novel logic — classifier prompts, server endpoints, storage abstractions — stays in this repository and is not contributed upstream.
