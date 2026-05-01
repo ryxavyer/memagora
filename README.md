@@ -1,6 +1,6 @@
 # MemAgora
 
-Local-first AI agent memory with key concept extraction for teams. Verbatim local storage, pluggable backend, 96.6% R@5 raw on LongMemEval.
+Local-first AI agent memory with institutional knowledge extraction for teams. Verbatim local storage, pluggable backend, 96.6% R@5 raw on LongMemEval.
 
 ---
 
