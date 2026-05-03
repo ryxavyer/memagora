@@ -16,7 +16,7 @@ AI memory system. Store everything, find anything. Local, free, no API key.
 
 ---
 
-## MCP Tools (19)
+## MCP Tools
 
 ### Palace (read)
 - mempalace_status -- Palace status and stats
@@ -25,7 +25,6 @@ AI memory system. Store everything, find anything. Local, free, no API key.
 - mempalace_get_taxonomy -- Get the full taxonomy tree
 - mempalace_search -- Search memories by query
 - mempalace_check_duplicate -- Check if a memory already exists
-- mempalace_get_aaak_spec -- Get the AAAK specification
 
 ### Palace (write)
 - mempalace_add_drawer -- Add a new memory (drawer)
@@ -57,7 +56,6 @@ AI memory system. Store everything, find anything. Local, free, no API key.
     mempalace search "query"              Search your memories
     mempalace split <dir>                 Split large transcript files
     mempalace wake-up                     Load palace into context
-    mempalace compress                    Compress palace storage
     mempalace status                      Show palace status
     mempalace repair                      Rebuild vector index
     mempalace mcp                         Show MCP setup command

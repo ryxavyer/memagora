@@ -18,7 +18,6 @@ Usage:
     python benchmarks/convomem_bench.py                          # sample 100 items
     python benchmarks/convomem_bench.py --limit 500              # sample 500 items
     python benchmarks/convomem_bench.py --category user_evidence  # one category only
-    python benchmarks/convomem_bench.py --mode aaak              # test AAAK compression
 """
 
 import os
@@ -177,14 +176,7 @@ def retrieve_for_item(item, top_k=10, mode="raw"):
         client = chromadb.PersistentClient(path=palace_path)
         collection = client.create_collection("mempal_drawers")
 
-        # Optionally compress
-        if mode == "aaak":
-            from mempalace.dialect import Dialect
-
-            dialect = Dialect()
-            docs = [dialect.compress(doc) for doc in corpus]
-        else:
-            docs = corpus
+        docs = corpus
 
         collection.add(
             documents=docs,
@@ -323,7 +315,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--mode",
-        choices=["raw", "aaak"],
+        choices=["raw"],
         default="raw",
         help="Retrieval mode",
     )

@@ -15,11 +15,10 @@ Usage (standalone):
     python -m mempalace.dedup --threshold 0.10         # stricter (near-identical only)
     python -m mempalace.dedup --threshold 0.35         # looser (catches paraphrased content)
     python -m mempalace.dedup --wing my_project        # scope to one wing
-    python -m mempalace.dedup --stats                  # stats only
     python -m mempalace.dedup --source "my_project"    # filter by source
 
 Usage (from CLI):
-    mempalace dedup [--dry-run] [--threshold 0.15] [--stats]
+    mempalace dedup [--dry-run] [--threshold 0.15]
 """
 
 import argparse
@@ -127,26 +126,6 @@ def dedup_source_group(col, drawer_ids, threshold=DEFAULT_THRESHOLD, dry_run=Tru
     return [k[0] for k in kept], to_delete
 
 
-def show_stats(palace_path=None):
-    """Show duplication statistics without making changes."""
-    palace_path = palace_path or _get_palace_path()
-    col = ChromaBackend().get_collection(palace_path, COLLECTION_NAME)
-
-    groups = get_source_groups(col)
-
-    total_drawers = sum(len(ids) for ids in groups.values())
-    print(f"\n  Sources with {MIN_DRAWERS_TO_CHECK}+ drawers: {len(groups)}")
-    print(f"  Total drawers in those sources: {total_drawers:,}")
-
-    print("\n  Top 15 by drawer count:")
-    sorted_groups = sorted(groups.items(), key=lambda x: len(x[1]), reverse=True)
-    for src, ids in sorted_groups[:15]:
-        print(f"    {len(ids):4d}  {src[:65]}")
-
-    estimated_dups = sum(int(len(ids) * 0.4) for ids in groups.values() if len(ids) > 20)
-    print(f"\n  Estimated duplicates (groups > 20): ~{estimated_dups:,}")
-
-
 def dedup_palace(
     palace_path=None,
     threshold=DEFAULT_THRESHOLD,
@@ -218,20 +197,16 @@ if __name__ == "__main__":
         help=f"Cosine distance threshold (default: {DEFAULT_THRESHOLD})",
     )
     parser.add_argument("--dry-run", action="store_true", help="Preview without deleting")
-    parser.add_argument("--stats", action="store_true", help="Show stats only")
     parser.add_argument("--wing", default=None, help="Scope dedup to a single wing")
     parser.add_argument("--source", default=None, help="Filter by source file pattern")
     args = parser.parse_args()
 
     path = os.path.expanduser(args.palace) if args.palace else None
 
-    if args.stats:
-        show_stats(palace_path=path)
-    else:
-        dedup_palace(
-            palace_path=path,
-            threshold=args.threshold,
-            dry_run=args.dry_run,
-            source_pattern=args.source,
-            wing=args.wing,
-        )
+    dedup_palace(
+        palace_path=path,
+        threshold=args.threshold,
+        dry_run=args.dry_run,
+        source_pattern=args.source,
+        wing=args.wing,
+    )

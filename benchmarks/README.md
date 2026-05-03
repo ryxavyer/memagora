@@ -23,9 +23,6 @@ curl -fsSL -o /tmp/longmemeval-data/longmemeval_s_cleaned.json \
 # Run (raw mode — our headline 96.6% result)
 python benchmarks/longmemeval_bench.py /tmp/longmemeval-data/longmemeval_s_cleaned.json
 
-# Run with AAAK compression (84.2%)
-python benchmarks/longmemeval_bench.py /tmp/longmemeval-data/longmemeval_s_cleaned.json --mode aaak
-
 # Run with room-based boosting (89.4%)
 python benchmarks/longmemeval_bench.py /tmp/longmemeval-data/longmemeval_s_cleaned.json --mode rooms
 
@@ -120,5 +117,4 @@ Raw results are in `benchmarks/results_*.jsonl` and `benchmarks/results_*.json`.
 ## Next Benchmarks (Planned)
 
 - **Scale testing** — ConvoMem at 50/100/300 conversations per item
-- **Hybrid AAAK** — search raw text, deliver AAAK-compressed results
 - **End-to-end QA** — retrieve + generate answer + measure F1 (needs LLM API key)

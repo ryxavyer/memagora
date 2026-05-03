@@ -11,7 +11,7 @@ from mempalace.onboarding import (
     _ask_projects,
     _ask_wings,
     _auto_detect,
-    _generate_aaak_bootstrap,
+    _generate_critical_facts_bootstrap,
     _header,
     _hr,
     _warn_ambiguous,
@@ -135,41 +135,40 @@ def test_quick_setup_saves_to_disk(tmp_path):
     assert (tmp_path / "entity_registry.json").exists()
 
 
-# ── _generate_aaak_bootstrap ───────────────────────────────────────────
+# ── _generate_critical_facts_bootstrap ────────────────────────────────
 
 
-def test_generate_aaak_bootstrap_creates_files(tmp_path):
+def test_generate_critical_facts_creates_file(tmp_path):
     people = [
         {"name": "Riley", "relationship": "daughter", "context": "personal"},
         {"name": "Devon", "relationship": "friend", "context": "personal"},
     ]
     projects = ["MemPalace"]
     wings = ["family", "creative"]
-    _generate_aaak_bootstrap(people, projects, wings, "personal", config_dir=tmp_path)
+    _generate_critical_facts_bootstrap(people, projects, wings, "personal", config_dir=tmp_path)
 
-    assert (tmp_path / "aaak_entities.md").exists()
     assert (tmp_path / "critical_facts.md").exists()
 
 
-def test_generate_aaak_bootstrap_entities_content(tmp_path):
+def test_generate_critical_facts_personal_content(tmp_path):
     people = [{"name": "Riley", "relationship": "daughter", "context": "personal"}]
     projects = ["MemPalace"]
     wings = ["family"]
-    _generate_aaak_bootstrap(people, projects, wings, "personal", config_dir=tmp_path)
+    _generate_critical_facts_bootstrap(people, projects, wings, "personal", config_dir=tmp_path)
 
-    content = (tmp_path / "aaak_entities.md").read_text(encoding="utf-8")
+    content = (tmp_path / "critical_facts.md").read_text(encoding="utf-8")
     assert "Riley" in content
-    assert "RIL" in content  # entity code
+    assert "daughter" in content
     assert "MemPalace" in content
 
 
-def test_generate_aaak_bootstrap_facts_content(tmp_path):
+def test_generate_critical_facts_work_content(tmp_path):
     people = [
         {"name": "Alice", "relationship": "colleague", "context": "work"},
     ]
     projects = ["Acme"]
     wings = ["projects"]
-    _generate_aaak_bootstrap(people, projects, wings, "work", config_dir=tmp_path)
+    _generate_critical_facts_bootstrap(people, projects, wings, "work", config_dir=tmp_path)
 
     content = (tmp_path / "critical_facts.md").read_text(encoding="utf-8")
     assert "Alice" in content
@@ -177,30 +176,17 @@ def test_generate_aaak_bootstrap_facts_content(tmp_path):
     assert "work" in content.lower()
 
 
-def test_generate_aaak_bootstrap_empty_people(tmp_path):
-    _generate_aaak_bootstrap([], [], ["general"], "personal", config_dir=tmp_path)
-    assert (tmp_path / "aaak_entities.md").exists()
+def test_generate_critical_facts_empty_people(tmp_path):
+    _generate_critical_facts_bootstrap([], [], ["general"], "personal", config_dir=tmp_path)
     assert (tmp_path / "critical_facts.md").exists()
 
 
-def test_generate_aaak_bootstrap_collision(tmp_path):
-    """Two people with same 3-letter code get different codes."""
-    people = [
-        {"name": "Alice", "relationship": "friend", "context": "work"},
-        {"name": "Alison", "relationship": "coworker", "context": "work"},
-    ]
-    _generate_aaak_bootstrap(people, [], ["work"], "work", config_dir=tmp_path)
-    content = (tmp_path / "aaak_entities.md").read_text(encoding="utf-8")
-    assert "ALI" in content
-    assert "ALIS" in content
-
-
-def test_generate_aaak_bootstrap_no_relationship(tmp_path):
+def test_generate_critical_facts_no_relationship(tmp_path):
     """Person without relationship string still generates entry."""
     people = [{"name": "Bob", "context": "work"}]
-    _generate_aaak_bootstrap(people, [], ["work"], "work", config_dir=tmp_path)
-    content = (tmp_path / "aaak_entities.md").read_text(encoding="utf-8")
-    assert "BOB=Bob" in content
+    _generate_critical_facts_bootstrap(people, [], ["work"], "work", config_dir=tmp_path)
+    content = (tmp_path / "critical_facts.md").read_text(encoding="utf-8")
+    assert "Bob" in content
 
 
 # ── _hr, _header ──────────────────────────────────────────────────────

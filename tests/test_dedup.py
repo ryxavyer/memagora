@@ -195,7 +195,7 @@ def test_dedup_source_group_query_failure_keeps():
     assert len(kept) == 2  # both kept on error
 
 
-# ── show_stats ────────────────────────────────────────────────────────
+# ── dedup_palace ──────────────────────────────────────────────────────
 
 
 def _install_mock_backend(mock_backend_cls, collection):
@@ -203,31 +203,6 @@ def _install_mock_backend(mock_backend_cls, collection):
     mock_backend.get_collection.return_value = collection
     mock_backend_cls.return_value = mock_backend
     return mock_backend
-
-
-@patch("mempalace.dedup.ChromaBackend")
-def test_show_stats(mock_backend_cls, tmp_path):
-    mock_col = MagicMock()
-    mock_col.count.return_value = 5
-    mock_col.get.side_effect = [
-        {
-            "ids": ["d1", "d2", "d3", "d4", "d5"],
-            "metadatas": [
-                {"source_file": "a.txt"},
-                {"source_file": "a.txt"},
-                {"source_file": "a.txt"},
-                {"source_file": "a.txt"},
-                {"source_file": "a.txt"},
-            ],
-        },
-        {"ids": []},
-    ]
-    _install_mock_backend(mock_backend_cls, mock_col)
-
-    dedup.show_stats(palace_path=str(tmp_path))  # should not raise
-
-
-# ── dedup_palace ──────────────────────────────────────────────────────
 
 
 @patch("mempalace.dedup.dedup_source_group")

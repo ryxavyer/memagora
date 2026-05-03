@@ -277,7 +277,7 @@ The sole cross-adapter requirement for `chunked_content` mode: chunks for a give
 
 ### 1.7 Closet integration
 
-Closets are the AAAK-compressed index layer (`palace.build_closet_lines`, `upsert_closet_lines`) that points to drawer content and enables LLM-scale scanning without reading every drawer. Closet-building is not an adapter concern:
+Closets are the index layer (`palace.build_closet_lines`, `upsert_closet_lines`) that points to drawer content and enables LLM-scale scanning without reading every drawer. Closet-building is not an adapter concern:
 
 - **Core builds closets** from adapter-yielded drawers as a post-step, via the existing `palace.py` helpers. Adapters do not call these APIs.
 - **Adapters MAY emit closet hints** in drawer metadata via a flat `;`-joined string:

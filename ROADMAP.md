@@ -49,17 +49,20 @@ These items from MemPalace's own work are on MemAgora's critical path. They are 
 
 **Process:** bug fixes to subsystems on this list should be considered for upstream contribution via the `upstream` remote. Bug fixes to subsystems FOUNDATION.md flags as strip candidates (AAAK dialect, Layer 1 importance, `_fuzzy_match`, hardcoded dedup stats) are not worth contributing — strip them locally.
 
-## v0.1 — Skeleton (next)
+## v0.1 — Skeleton (shipped 2026-05-03)
 
 Goal: stand up the new package layout and the backend-wrapper integration point. No network calls yet.
 
-- Strip the four FOUNDATION-flagged dead subsystems: AAAK dialect (`mempalace/dialect.py`), Layer 1 importance scoring, `palace_graph.py:_fuzzy_match`, hardcoded dedup statistics. Each is a separate PR with the rationale linked back to FOUNDATION.md.
-- Document the upstream-sync workflow (fetch `upstream/main` → fast-forward `mempalace-main` → audit diff → selective merge into `master`) and the version-pinning policy in [AGENTS.md](AGENTS.md) "Known Risks." The `upstream` remote and `mempalace-main` branch already exist.
-- Add the new MemAgora-specific modules inside the existing `mempalace/` package: `classifier.py`, `client.py`, `audit.py`, `config_agora.py`, and a `backend_agora.py` wrapper. Stubs and tests, no behavior yet. (Suffixed names avoid collisions with existing inherited files like `config.py`. They lose the suffix at the v1.0 rename when the foundation is also renamed and namespaces clarify.)
-- Create top-level `contracts/` package with the wire format (fact payload, API request/response shapes). Independently versioned with its own `pyproject.toml` so a future third-party client can install it without pulling palace or agora.
-- Implement `mempalace/backend_agora.py` as a `BaseBackend` wrapper around `ChromaBackend`. Pass-through writes today; classifier hook in v0.2.
-- Configuration layer: per-engineer endpoint URL, API key, classifier prompt path. All optional — if unset, the wrapper is a no-op and the local palace is unchanged.
-- Dry-run mode that logs what the classifier *would have* sent without making any network call. This is the default in v0.1 and stays as the integration-test mode forever.
+- ✓ Stripped the four FOUNDATION-flagged dead subsystems: AAAK dialect (`mempalace/dialect.py` deleted, `mempalace compress` CLI and `mempalace_get_aaak_spec` MCP tool removed), Layer 1 importance scoring (`MemoryStack` simplified to L0/L2/L3), `palace_graph.py:_fuzzy_match` (replaced with inline substring filter at the only caller), hardcoded dedup statistics (`show_stats()` and `--stats` flag removed; `dedup_palace()` itself untouched).
+- ✓ Documented the upstream-sync workflow (fetch `upstream/main` → fast-forward `mempalace-main` → audit diff → selective merge into `master`) and the version-pinning policy in [AGENTS.md](AGENTS.md) "Known Risks."
+- ✓ Added MemAgora-specific modules inside the existing `mempalace/` package: `classifier.py` (stub returning `[]`), `client.py` (stub, no httpx/requests dep), `audit.py` (real append-only JSONL log), `config_agora.py` (`AgoraConfig` + env-var precedence), and `backend_agora.py` wrapper. Suffixed names drop at the v1.0 rename.
+- ✓ Created top-level `contracts/` package with the wire format. Independently versioned with its own `pyproject.toml`. Pure dataclasses, no runtime dependencies.
+- ✓ Implemented `mempalace/backend_agora.py` as a `BaseBackend` wrapper around `ChromaBackend`. Reads pass through; `add`/`upsert` write one audit entry per document when an endpoint is configured. Classifier hook is the v0.2 plug-in point at `_maybe_audit`.
+- ✓ Configuration layer: endpoint URL, API key, classifier prompt path, dry-run flag. All optional — `endpoint=None` makes the wrapper a pure passthrough with no audit entries.
+- ✓ Dry-run mode is the default. Audit log records intended writes without making any network call. Stays as the integration-test mode forever.
+- ✓ Wired into `palace.py:_resolve_default_backend` via `backends.registry.resolve_backend_for_palace()`. Engineers opt in by setting `MEMPALACE_BACKEND=agora`. Default remains `chroma` when unset.
+
+**Verification:** 1483 tests passing, 0 failures. Smoke test: `MEMPALACE_BACKEND=agora MEMPALACE_AGORA_ENDPOINT=http://example.invalid python -c "from mempalace.palace import get_collection; ..."` produces audit-log entries without network activity.
 
 ## v0.2 — Classifier + audit
 

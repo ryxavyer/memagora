@@ -18,12 +18,10 @@ Outputs:
 
 Modes:
     raw     — baseline: raw text into ChromaDB (default)
-    aaak    — AAAK dialect compression before ingestion
     rooms   — topic-based room detection + room-filtered search
 
 Usage:
     python benchmarks/longmemeval_bench.py data/longmemeval_s_cleaned.json
-    python benchmarks/longmemeval_bench.py data/longmemeval_s_cleaned.json --mode aaak
     python benchmarks/longmemeval_bench.py data/longmemeval_s_cleaned.json --mode rooms
     python benchmarks/longmemeval_bench.py data/longmemeval_s_cleaned.json --granularity turn
     python benchmarks/longmemeval_bench.py data/longmemeval_s_cleaned.json --limit 20
@@ -233,80 +231,6 @@ def build_palace_and_retrieve(entry, granularity="session", n_results=50):
     ranked_indices = [doc_id_to_idx[rid] for rid in result_ids]
 
     # Fill in any missing indices (ChromaDB may return fewer than corpus size)
-    seen = set(ranked_indices)
-    for i in range(len(corpus)):
-        if i not in seen:
-            ranked_indices.append(i)
-
-    return ranked_indices, corpus, corpus_ids, corpus_timestamps
-
-
-def build_palace_and_retrieve_aaak(entry, granularity="session", n_results=50):
-    """
-    AAAK mode: compress each session/turn with AAAK dialect before ingesting.
-    Query still uses raw question text — tests whether compressed representations
-    retain enough semantic signal for retrieval.
-    """
-    from mempalace.dialect import Dialect
-
-    dialect = Dialect()
-
-    corpus = []  # original text (for output)
-    corpus_compressed = []  # AAAK compressed (for ingestion)
-    corpus_ids = []
-    corpus_timestamps = []
-
-    sessions = entry["haystack_sessions"]
-    session_ids = entry["haystack_session_ids"]
-    dates = entry["haystack_dates"]
-
-    for sess_idx, (session, sess_id, date) in enumerate(zip(sessions, session_ids, dates)):
-        if granularity == "session":
-            user_turns = [t["content"] for t in session if t["role"] == "user"]
-            if user_turns:
-                doc = "\n".join(user_turns)
-                compressed = dialect.compress(doc, metadata={"date": date})
-                corpus.append(doc)
-                corpus_compressed.append(compressed)
-                corpus_ids.append(sess_id)
-                corpus_timestamps.append(date)
-        else:
-            turn_num = 0
-            for turn in session:
-                if turn["role"] == "user":
-                    compressed = dialect.compress(turn["content"])
-                    corpus.append(turn["content"])
-                    corpus_compressed.append(compressed)
-                    corpus_ids.append(f"{sess_id}_turn_{turn_num}")
-                    corpus_timestamps.append(date)
-                    turn_num += 1
-
-    if not corpus:
-        return [], corpus, corpus_ids, corpus_timestamps
-
-    collection = _fresh_collection()
-
-    # Ingest AAAK compressed text
-    collection.add(
-        documents=corpus_compressed,
-        ids=[f"doc_{i}" for i in range(len(corpus_compressed))],
-        metadatas=[
-            {"corpus_id": cid, "timestamp": ts} for cid, ts in zip(corpus_ids, corpus_timestamps)
-        ],
-    )
-
-    # Query with raw question (not compressed)
-    query = entry["question"]
-    results = collection.query(
-        query_texts=[query],
-        n_results=min(n_results, len(corpus)),
-        include=["distances", "metadatas"],
-    )
-
-    result_ids = results["ids"][0]
-    doc_id_to_idx = {f"doc_{i}": i for i in range(len(corpus))}
-    ranked_indices = [doc_id_to_idx[rid] for rid in result_ids]
-
     seen = set(ranked_indices)
     for i in range(len(corpus)):
         if i not in seen:
@@ -3079,11 +3003,7 @@ def run_benchmark(
         answer_sids = set(entry["answer_session_ids"])
 
         # Run retrieval with selected mode
-        if mode == "aaak":
-            rankings, corpus, corpus_ids, corpus_timestamps = build_palace_and_retrieve_aaak(
-                entry, granularity=granularity
-            )
-        elif mode == "rooms":
+        if mode == "rooms":
             rankings, corpus, corpus_ids, corpus_timestamps = build_palace_and_retrieve_rooms(
                 entry, granularity=granularity
             )
@@ -3277,7 +3197,6 @@ if __name__ == "__main__":
         "--mode",
         choices=[
             "raw",
-            "aaak",
             "rooms",
             "hybrid",
             "hybrid_v2",

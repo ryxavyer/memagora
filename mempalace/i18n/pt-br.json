@@ -32,9 +32,6 @@
     "migrate_complete": "Migração completa.",
     "no_palace": "Nenhum palácio encontrado. Execute: mempalace init <diretório>"
   },
-  "aaak": {
-    "instruction": "Comprima em português. Hifens entre palavras, pipes entre conceitos. Remova artigos e palavras de preenchimento. Mantenha nomes próprios e números exatos."
-  },
   "regex": {
     "topic_pattern": "[A-ZÀ-Ú][a-zà-ÿ]{2,}|[A-Za-zÀ-ÿ]{3,}",
     "stop_words": "o a os as um uma uns umas de do da dos das em no na nos nas por para com sem sobre entre ao aos seu sua seus suas meu minha meus minhas tu teu tua que quem qual onde quando porque embora mas porém também muito mais como este esta estes estas esse essa esses essas aquele aquela é são está estão foi ser estar ter sido",

@@ -16,7 +16,7 @@ Stripped of marketing, MemPalace contributes two genuinely useful things to MemA
 
 **2. The wing/room/drawer organizational metaphor.** A human-comprehensible mental model for navigating memory. This does not improve retrieval accuracy — ChromaDB's defaults handle that on their own. It improves *navigability and scoping*. An agent can search within a specific wing rather than against all of memory, which is a relevance-and-context improvement, not an accuracy improvement.
 
-Everything else MemPalace claims to provide (verbatim recall as a unique innovation, the AAAK compression dialect, the temporal knowledge graph, importance scoring, fuzzy matching) ranges from "real but oversold" to "broken and not worth keeping."
+Everything else MemPalace claims to provide (verbatim recall as a unique innovation, the now-removed AAAK compression dialect, the temporal knowledge graph, importance scoring, fuzzy matching) ranges from "real but oversold" to "broken and not worth keeping." The AAAK dialect, Layer 1 importance scoring, the substring-as-fuzzy-matching helper, and the hardcoded dedup statistics were all removed in v0.1; only the verbatim-recall and temporal-knowledge-graph claims remain inherited.
 
 ## Inherited Design Principles (and MemAgora's Position On Each)
 
@@ -68,10 +68,8 @@ These subsystems exist in the inherited code but MemAgora doesn't invoke them. T
 
 | File / Subsystem | Status | Notes |
 |---|---|---|
-| `mempalace/dialect.py` (AAAK) | **Strip candidate.** | Demonstrated 12.4% accuracy regression. Token math was wrong at launch and uses approximate (not real-tokenizer) counts. Not load-bearing for anything MemAgora does. Likely first subsystem to be removed. |
-| `mempalace/layers.py` Layer 1 importance scoring | **Strip candidate.** | Sorts by `importance` metadata that the mining pipeline never sets. Default value of `3` for every drawer makes the "Essential Story" effectively random order. Broken in MemPalace, not used by MemAgora. |
-| `mempalace/layers.py` token estimation | **Bug to fix or strip.** | Two different broken methods (`len(text)//4` in one place, `len(words)*1.3` in another). Neither uses a real tokenizer. README claims "~170 tokens" for wake-up but actual counts are 600-900. Fix only if a use case actually depends on accurate counts. |
-| `mempalace/dedup.py` | **Use with caveat.** | The dedup operation itself works. The reported statistics (`int(len(ids) * 0.4)`) are hardcoded estimates, not computed values. The numbers shown to users are misleading; the dedup behavior is fine. |
+| `mempalace/layers.py` token estimation | **Bug to fix or strip.** | Two different broken methods (`len(text)//4` in one place, `len(words)*1.3` in another). Neither uses a real tokenizer. Fix only if a use case actually depends on accurate counts. |
+| `mempalace/dedup.py` | **Used.** | The `dedup_palace()` operation works. The misleading hardcoded reporting statistics (`show_stats()`) were stripped in v0.1. |
 | `mempalace/spellcheck.py` | **Dormant.** | Auto-corrects user messages. Not used by MemAgora. |
 | `mempalace/exporter.py` | **Dormant.** | Palace data export. Not used by MemAgora's flow but useful for engineers. Keep. |
 | `mempalace/onboarding.py` | **Selectively used.** | Interactive first-run setup. MemAgora may extend this with its own prompts but the underlying subsystem stays. |
@@ -85,7 +83,6 @@ These subsystems exist in the inherited code but MemAgora doesn't invoke them. T
 
 Some inherited code has names that suggest more sophistication than the implementation provides. Worth knowing before relying on them:
 
-- **`mempalace/palace_graph.py:_fuzzy_match`** — Despite the name, this is Python's `in` operator doing exact substring containment. No Levenshtein, no trigram similarity, no actual fuzzy matching algorithm. Treat it as substring matching and don't expect more.
 - **"Knowledge graph" in `mempalace/knowledge_graph.py`** — A SQLite database with two tables (entities and triples) implementing a standard SCD Type 2 pattern from data warehousing. Not graph-theoretic, no graph algorithms. Useful for what it does (temporal entity-relationship storage) but don't expect more.
 
 ## Inherited Architecture Diagram
@@ -99,8 +96,6 @@ This is what MemPalace's architecture looks like as inherited. MemAgora layers o
       WING (person/project)
         └── ROOM (day/topic)
               └── DRAWER (verbatim text chunk)
-
-    Index layer (AAAK) — currently dormant, strip candidate
 
     Knowledge Graph:
       ENTITY → PREDICATE → ENTITY (with valid_from / valid_to dates)

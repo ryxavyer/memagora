@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-layers.py — 4-Layer Memory Stack for mempalace
+layers.py — 3-Layer Memory Stack for mempalace
 ===================================================
 
 Load only what you need, when you need it.
 
     Layer 0: Identity       (~100 tokens)   — Always loaded. "Who am I?"
-    Layer 1: Essential Story (~500-800)      — Always loaded. Top moments from the palace.
     Layer 2: On-Demand      (~200-500 each)  — Loaded when a topic/wing comes up.
     Layer 3: Deep Search    (unlimited)      — Full ChromaDB semantic search.
 
-Wake-up cost: ~600-900 tokens (L0+L1). Leaves 95%+ of context free.
+Wake-up cost: ~100 tokens (L0 only). L2/L3 are query-driven, not auto-loaded.
 
 Reads directly from ChromaDB (mempalace_drawers)
 and ~/.mempalace/identity.txt.
@@ -19,7 +18,6 @@ and ~/.mempalace/identity.txt.
 import os
 import sys
 from pathlib import Path
-from collections import defaultdict
 
 from .config import MempalaceConfig
 from .palace import get_collection as _get_collection
@@ -66,115 +64,6 @@ class Layer0:
 
     def token_estimate(self) -> int:
         return len(self.render()) // 4
-
-
-# ---------------------------------------------------------------------------
-# Layer 1 — Essential Story (auto-generated from palace)
-# ---------------------------------------------------------------------------
-
-
-class Layer1:
-    """
-    ~500-800 tokens. Always loaded.
-    Auto-generated from the highest-weight / most-recent drawers in the palace.
-    Groups by room, picks the top N moments, compresses to a compact summary.
-    """
-
-    MAX_DRAWERS = 15  # at most 15 moments in wake-up
-    MAX_CHARS = 3200  # hard cap on total L1 text (~800 tokens)
-    MAX_SCAN = 2000  # don't scan more than this for L1 generation
-
-    def __init__(self, palace_path: str = None, wing: str = None):
-        cfg = MempalaceConfig()
-        self.palace_path = palace_path or cfg.palace_path
-        self.wing = wing
-
-    def generate(self) -> str:
-        """Pull top drawers from ChromaDB and format as compact L1 text."""
-        try:
-            col = _get_collection(self.palace_path, create=False)
-        except Exception:
-            return "## L1 — No palace found. Run: mempalace mine <dir>"
-
-        # Fetch all drawers in batches to avoid SQLite variable limit (~999)
-        _BATCH = 500
-        docs, metas = [], []
-        offset = 0
-        while True:
-            kwargs = {"include": ["documents", "metadatas"], "limit": _BATCH, "offset": offset}
-            if self.wing:
-                kwargs["where"] = {"wing": self.wing}
-            try:
-                batch = col.get(**kwargs)
-            except Exception:
-                break
-            batch_docs = batch.get("documents", [])
-            batch_metas = batch.get("metadatas", [])
-            if not batch_docs:
-                break
-            docs.extend(batch_docs)
-            metas.extend(batch_metas)
-            offset += len(batch_docs)
-            if len(batch_docs) < _BATCH or len(docs) >= self.MAX_SCAN:
-                break
-
-        if not docs:
-            return "## L1 — No memories yet."
-
-        # Score each drawer: prefer high importance, recent filing
-        scored = []
-        for doc, meta in zip(docs, metas):
-            importance = 3
-            # Try multiple metadata keys that might carry weight info
-            for key in ("importance", "emotional_weight", "weight"):
-                val = meta.get(key)
-                if val is not None:
-                    try:
-                        importance = float(val)
-                    except (ValueError, TypeError):
-                        pass
-                    break
-            scored.append((importance, meta, doc))
-
-        # Sort by importance descending, take top N
-        scored.sort(key=lambda x: x[0], reverse=True)
-        top = scored[: self.MAX_DRAWERS]
-
-        # Group by room for readability
-        by_room = defaultdict(list)
-        for imp, meta, doc in top:
-            room = meta.get("room", "general")
-            by_room[room].append((imp, meta, doc))
-
-        # Build compact text
-        lines = ["## L1 — ESSENTIAL STORY"]
-
-        total_len = 0
-        for room, entries in sorted(by_room.items()):
-            room_line = f"\n[{room}]"
-            lines.append(room_line)
-            total_len += len(room_line)
-
-            for imp, meta, doc in entries:
-                source = Path(meta.get("source_file", "")).name if meta.get("source_file") else ""
-
-                # Truncate doc to keep L1 compact
-                snippet = doc.strip().replace("\n", " ")
-                if len(snippet) > 200:
-                    snippet = snippet[:197] + "..."
-
-                entry_line = f"  - {snippet}"
-                if source:
-                    entry_line += f"  ({source})"
-
-                if total_len + len(entry_line) > self.MAX_CHARS:
-                    lines.append("  ... (more in L3 search)")
-                    return "\n".join(lines)
-
-                lines.append(entry_line)
-                total_len += len(entry_line)
-
-        return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -356,12 +245,16 @@ class Layer3:
 
 class MemoryStack:
     """
-    The full 4-layer stack. One class, one palace, everything works.
+    The 3-layer stack. One class, one palace, everything works.
 
         stack = MemoryStack()
-        print(stack.wake_up())                # L0 + L1 (~600-900 tokens)
+        print(stack.wake_up())                 # L0 only (~100 tokens)
         print(stack.recall(wing="my_app"))     # L2 on-demand
         print(stack.search("pricing change"))  # L3 deep search
+
+    The wing argument on wake_up is accepted for backwards compatibility but
+    is no longer used — wake-up now returns identity only. Project/wing-scoped
+    context is loaded on-demand via recall() or search().
     """
 
     def __init__(self, palace_path: str = None, identity_path: str = None):
@@ -370,30 +263,19 @@ class MemoryStack:
         self.identity_path = identity_path or os.path.expanduser("~/.mempalace/identity.txt")
 
         self.l0 = Layer0(self.identity_path)
-        self.l1 = Layer1(self.palace_path)
         self.l2 = Layer2(self.palace_path)
         self.l3 = Layer3(self.palace_path)
 
     def wake_up(self, wing: str = None) -> str:
         """
-        Generate wake-up text: L0 (identity) + L1 (essential story).
-        Typically ~600-900 tokens. Inject into system prompt or first message.
+        Generate wake-up text: L0 (identity).
+        Typically ~100 tokens. Inject into system prompt or first message.
 
         Args:
-            wing: Optional wing filter for L1 (project-specific wake-up).
+            wing: Accepted for backwards compatibility, currently ignored.
+                Wing-scoped context is query-driven via recall()/search().
         """
-        parts = []
-
-        # L0: Identity
-        parts.append(self.l0.render())
-        parts.append("")
-
-        # L1: Essential Story
-        if wing:
-            self.l1.wing = wing
-        parts.append(self.l1.generate())
-
-        return "\n".join(parts)
+        return self.l0.render()
 
     def recall(self, wing: str = None, room: str = None, n_results: int = 10) -> str:
         """On-demand L2 retrieval filtered by wing/room."""
@@ -411,9 +293,6 @@ class MemoryStack:
                 "path": self.identity_path,
                 "exists": os.path.exists(self.identity_path),
                 "tokens": self.l0.token_estimate(),
-            },
-            "L1_essential": {
-                "description": "Auto-generated from top palace drawers",
             },
             "L2_on_demand": {
                 "description": "Wing/room filtered retrieval",
@@ -442,11 +321,10 @@ if __name__ == "__main__":
     import json
 
     def usage():
-        print("layers.py — 4-Layer Memory Stack")
+        print("layers.py — 3-Layer Memory Stack")
         print()
         print("Usage:")
-        print("  python layers.py wake-up              Show L0 + L1")
-        print("  python layers.py wake-up --wing=NAME  Wake-up for a specific project")
+        print("  python layers.py wake-up              Show L0 (identity)")
         print("  python layers.py recall --wing=NAME   On-demand L2 retrieval")
         print("  python layers.py search <query>       Deep L3 search")
         print("  python layers.py status               Show layer status")

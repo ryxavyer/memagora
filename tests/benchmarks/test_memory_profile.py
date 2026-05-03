@@ -5,7 +5,6 @@ Uses tracemalloc for heap snapshots and psutil/resource for RSS.
 Targets the highest-risk code paths:
   - Repeated search() calls (PersistentClient re-instantiation)
   - Repeated tool_status() calls (unbounded metadata fetch)
-  - Layer1.generate() (fetches all drawers)
 """
 
 import tracemalloc
@@ -108,40 +107,6 @@ class TestToolStatusMemoryProfile:
         record_metric("memory_tool_status", "rss_growth_mb", round(growth, 2))
         record_metric("memory_tool_status", "n_calls", n_calls)
         record_metric("memory_tool_status", "palace_size", 2_000)
-
-
-@pytest.mark.benchmark
-class TestLayer1MemoryProfile:
-    """Layer1.generate() fetches ALL drawers — same risk as tool_status."""
-
-    def test_layer1_repeated_generate(self, tmp_path):
-        """Layer1 fetches all drawers for scoring. Track memory over repeats."""
-        gen = PalaceDataGenerator(seed=42, scale="small")
-        palace_path = str(tmp_path / "palace")
-        gen.populate_palace_directly(palace_path, n_drawers=2_000, include_needles=False)
-
-        from mempalace.layers import Layer1
-
-        layer = Layer1(palace_path=palace_path)
-
-        n_calls = 30
-        rss_readings = []
-        rss_readings.append(("start", _get_rss_mb()))
-
-        for i in range(n_calls):
-            text = layer.generate()
-            assert "L1" in text
-            if (i + 1) % 10 == 0:
-                rss_readings.append((f"after_{i + 1}", _get_rss_mb()))
-
-        start_rss = rss_readings[0][1]
-        end_rss = rss_readings[-1][1]
-        growth = end_rss - start_rss
-
-        record_metric("memory_layer1", "rss_start_mb", round(start_rss, 2))
-        record_metric("memory_layer1", "rss_end_mb", round(end_rss, 2))
-        record_metric("memory_layer1", "rss_growth_mb", round(growth, 2))
-        record_metric("memory_layer1", "n_calls", n_calls)
 
 
 @pytest.mark.benchmark

@@ -64,7 +64,7 @@ uv run pytest tests/benchmarks/ -v --bench-scale=stress -m stress
 | `test_palace_boost.py` | Retrieval improvement from wing/room filtering at different scales |
 | `test_recall_threshold.py` | Per-room recall ceiling — isolates embedding model limit with all drawers in one bucket |
 | `test_knowledge_graph_bench.py` | Triple insertion rate, temporal query accuracy, SQLite concurrent access |
-| `test_layers_bench.py` | MemoryStack wake-up cost, Layer1 unbounded fetch, token budget compliance |
+| `test_layers_bench.py` | MemoryStack wake-up cost, token budget compliance, Layer2/L3 retrieval latency |
 
 ## Architecture
 

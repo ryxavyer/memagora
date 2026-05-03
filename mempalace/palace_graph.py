@@ -188,9 +188,11 @@ def traverse(start_room: str, col=None, config=None, max_hops: int = 2):
     nodes, edges = build_graph(col, config)
 
     if start_room not in nodes:
+        q = start_room.lower()
+        suggestions = [room for room in nodes if q in room][:5]
         return {
             "error": f"Room '{start_room}' not found",
-            "suggestions": _fuzzy_match(start_room, nodes),
+            "suggestions": suggestions,
         }
 
     start = nodes[start_room]
@@ -305,20 +307,6 @@ def graph_stats(col=None, config=None):
             if len(d["wings"]) >= 2
         ],
     }
-
-
-def _fuzzy_match(query: str, nodes: dict, n: int = 5):
-    """Find rooms that approximately match a query string."""
-    query_lower = query.lower()
-    scored = []
-    for room in nodes:
-        # Simple substring matching
-        if query_lower in room:
-            scored.append((room, 1.0))
-        elif any(word in room for word in query_lower.split("-")):
-            scored.append((room, 0.5))
-    scored.sort(key=lambda x: -x[1])
-    return [r for r, _ in scored[:n]]
 
 
 # =============================================================================

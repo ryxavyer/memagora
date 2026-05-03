@@ -117,21 +117,12 @@ def _call_llm(cfg: LLMConfig, source_file: str, wing: str, room: str, content: s
 
     Returns (parsed_json_dict_or_None, usage_dict_or_None).
     """
-    try:
-        from mempalace.i18n import t
-
-        lang_instruction = t("aaak.instruction")
-    except Exception:
-        lang_instruction = ""
-
     prompt = PROMPT_TEMPLATE.format(
         source_file=source_file[:100],
         wing=wing,
         room=room,
         content=content[:MAX_CONTENT_CHARS],
     )
-    if lang_instruction and "english" not in lang_instruction.lower():
-        prompt += f"\n\nLanguage instruction: {lang_instruction}"
 
     body = json.dumps(
         {

@@ -32,9 +32,6 @@
     "migrate_complete": "Migrazione completata.",
     "no_palace": "Nessun palazzo trovato. Esegui: mempalace init <cartella>"
   },
-  "aaak": {
-    "instruction": "Comprimi in italiano. Trattini tra le parole, pipe tra i concetti. Elimina articoli e parole di riempimento. Mantieni nomi propri e numeri esatti."
-  },
   "regex": {
     "topic_pattern": "[A-ZÀ-Ú][a-zà-ú]{2,}|[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9_]{2,}",
     "stop_words": "il lo la i gli le un uno una di del della dello dei degli delle al allo alla ai agli alle in con su per tra fra da dal dalla dallo dai dagli dalle e o ma che chi cui come dove quando perché mentre anche ancora già molto poco solo sempre mai essere avere sono sei siamo siete era erano stato stata questo questa questi queste quello quella quelli quelle mio mia miei mie tuo tua tuoi tue suo sua suoi sue nostro nostra nostri nostre vostro vostra vostri vostre loro",

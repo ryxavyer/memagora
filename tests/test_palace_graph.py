@@ -26,7 +26,6 @@ def _make_fake_collection(metadatas, ids=None):
 # Patch chromadb at import time so palace_graph can be imported
 with patch.dict("sys.modules", {"chromadb": MagicMock()}):
     from mempalace.palace_graph import (
-        _fuzzy_match,
         build_graph,
         find_tunnels,
         graph_stats,
@@ -277,31 +276,3 @@ class TestGraphStats:
         assert "wing_code" in stats["rooms_per_wing"]
 
 
-# --- _fuzzy_match ---
-
-
-class TestFuzzyMatch:
-    def test_exact_substring(self):
-        nodes = {"chromadb-setup": {}, "auth-module": {}, "deploy-config": {}}
-        result = _fuzzy_match("chromadb", nodes)
-        assert "chromadb-setup" in result
-
-    def test_partial_word_match(self):
-        nodes = {"chromadb-setup": {}, "auth-module": {}, "deploy-config": {}}
-        result = _fuzzy_match("auth", nodes)
-        assert "auth-module" in result
-
-    def test_no_match(self):
-        nodes = {"chromadb-setup": {}, "auth-module": {}}
-        result = _fuzzy_match("zzzzz", nodes)
-        assert result == []
-
-    def test_hyphenated_query(self):
-        nodes = {"riley-college-apps": {}, "college-prep": {}}
-        result = _fuzzy_match("riley-college", nodes)
-        assert "riley-college-apps" in result
-
-    def test_max_results(self):
-        nodes = {f"room-{i}": {} for i in range(20)}
-        result = _fuzzy_match("room", nodes, n=3)
-        assert len(result) <= 3

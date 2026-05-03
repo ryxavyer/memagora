@@ -199,8 +199,8 @@ class TestRealWorldScenarios:
             "MemPalace loaded. Wings: technical, emotions, identity. "
             "Rooms: chromadb-setup, error-handling, project-planning. "
             "Total drawers: 234. Knowledge graph: 89 entities, 156 triples. "
-            "AAAK dialect active. Protocol: verify before responding. "
-        ) * 5  # ~1000 chars
+            "Protocol: verify before responding. "
+        ) * 5  # ~900 chars
         real_query = "How did we decide on the database architecture?"
         query = wakeup + real_query
         result = sanitize_query(query)
@@ -216,7 +216,7 @@ class TestRealWorldScenarios:
             "## Architecture Decisions\n"
             "- Use ChromaDB for vector storage\n"
             "- MCP protocol for tool integration\n"
-            "- AAAK compression for efficient storage\n"
+            "- Local-first storage with verbatim guarantees\n"
         ) * 10  # ~750 chars
         real_query = "What were the performance benchmarks for the search system?"
         query = memory_md + "\n" + real_query

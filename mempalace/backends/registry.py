@@ -178,7 +178,15 @@ def resolve_backend_for_palace(
 
 
 def _register_builtins() -> None:
-    """Register chroma as the in-tree default."""
+    """Register chroma as the in-tree default.
+
+    AgoraBackend (``mempalace.backend_agora``) lives outside the
+    ``backends/`` subpackage, so registering it here would create a
+    circular import (registry → backend_agora → backends.base →
+    backends/__init__ → registry). It is registered via the
+    ``mempalace.backends`` entry-point in ``pyproject.toml`` instead,
+    discovered lazily by :func:`_discover_entry_points`.
+    """
     from .chroma import ChromaBackend
 
     # Use setdefault semantics so a caller that pre-registered for tests wins.

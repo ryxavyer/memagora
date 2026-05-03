@@ -536,9 +536,9 @@ def add_to_known_entities(entities_by_category: dict, wing: str = None) -> str:
     without changing the on-disk ordering of pre-existing names.
 
     If a category is stored on-disk as ``{name: code}`` (the alternate
-    miner-supported shape, used by dialect-style configs), new names are
-    added as keys with ``None`` values so existing code mappings aren't
-    overwritten. A later compress pass can assign codes.
+    miner-supported shape, used by external entity-code configs), new
+    names are added as keys with ``None`` values so existing code
+    mappings aren't overwritten.
 
     When ``wing`` is provided AND ``entities_by_category`` contains a
     ``topics`` list, those topics are also recorded under

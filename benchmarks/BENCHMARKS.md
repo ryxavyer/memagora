@@ -559,7 +559,6 @@ All raw results are committed:
 | `results_hybrid_v3_rerank_full500.jsonl` | hybrid+rerank | 99.4% | Haiku |
 | `results_palace_rerank_full500.jsonl` | palace+rerank | 99.4% | Haiku |
 | `results_diary_haiku_rerank_full500.jsonl` | diary+rerank | 98.2% | 65% cache, partial |
-| `results_aaak_full500.jsonl` | aaak | 84.2% | Compressed sessions |
 | `results_rooms_full500.jsonl` | rooms | 89.4% | Session rooms |
 | `results_mempal_hybrid_v4_llmrerank_session_20260325_0930.jsonl` | hybrid_v4+rerank | 100% | Haiku, 500/500 |
 | `results_mempal_hybrid_v4_llmrerank_session_20260325_1054.jsonl` | hybrid_v4+rerank | 100% | Sonnet, LME 500/500 |

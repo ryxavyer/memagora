@@ -726,13 +726,7 @@ def run_benchmark(
             client = chromadb.PersistentClient(path=palace_path)
             collection = client.create_collection("mempal_drawers")
 
-            if mode == "aaak":
-                from mempalace.dialect import Dialect
-
-                dialect = Dialect()
-                docs_to_ingest = [dialect.compress(doc) for doc in corpus]
-            else:
-                docs_to_ingest = corpus
+            docs_to_ingest = corpus
 
             corpus_embeddings = _embed(docs_to_ingest, embed_model)
             add_kwargs = dict(
@@ -1018,7 +1012,7 @@ if __name__ == "__main__":
     parser.add_argument("--top-k", type=int, default=50, help="Top-k retrieval (default: 50)")
     parser.add_argument(
         "--mode",
-        choices=["raw", "aaak", "hybrid", "rooms", "palace"],
+        choices=["raw", "hybrid", "rooms", "palace"],
         default="raw",
         help="Retrieval mode: raw, hybrid (v5), rooms (keyword routing), palace (LLM room assignment)",
     )

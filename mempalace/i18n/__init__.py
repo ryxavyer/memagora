@@ -6,7 +6,6 @@ Usage:
     load_lang("fr")           # load French
     print(t("cli.mine_start", path="/docs"))  # "Extraction de /docs..."
     print(t("terms.wing"))    # "aile"
-    print(t("aaak.instruction"))  # AAAK compression instruction in French
 
 Each locale JSON may include an ``entity`` section with patterns used by
 ``mempalace.entity_detector``. See ``get_entity_patterns`` for the merge rules

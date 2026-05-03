@@ -17,12 +17,12 @@ MemAgora is **selectively** built on MemPalace, not faithfully derived from it. 
 - **Agent interface plumbing** — The MCP server, Claude Code hooks, conversation format parsers (Claude/ChatGPT/Codex/Slack), ChromaDB integration, and CLI dispatcher. This is real engineering work that would take weeks to rebuild and isn't algorithmically interesting to redo.
 - **The organizational metaphor** — Wings, rooms, and drawers as a human-comprehensible mental model for navigating memory. This isn't an accuracy improvement over flat vector search (ChromaDB's defaults handle retrieval well on their own). The value is in *navigability and scoping* — an agent can search "how did we handle rate limiting" within a specific wing rather than against all of memory. Different problem than retrieval accuracy, real value.
 
-**What MemAgora does not inherit, and will likely strip:**
+**What MemAgora does not inherit:**
 
-- **AAAK compression dialect** — Demonstrated 12.4% accuracy regression for compression that doesn't reliably save tokens at the scales engineers actually operate at. Not load-bearing for MemAgora. Candidate for removal.
-- **Layer 1 "Essential Story" importance scoring** — Sorts by metadata that the mining pipeline never sets, making the output effectively random order. Broken in MemPalace, not used by MemAgora. Candidate for removal.
-- **Substring-as-fuzzy-matching** — `palace_graph.py:_fuzzy_match` is `in` operator wrapped in misleading naming. Not used by MemAgora.
-- **Hardcoded dedup statistics** — `dedup.py` estimates duplicates as `int(len(ids) * 0.4)` rather than computing them. Cosmetic in MemPalace, not used by MemAgora.
+- **AAAK compression dialect** — Removed in v0.1. Demonstrated 12.4% accuracy regression for compression that didn't reliably save tokens at the scales engineers actually operate at.
+- **Layer 1 "Essential Story" importance scoring** — Removed in v0.1. Sorted by metadata that the mining pipeline never set, making the output effectively random order.
+- **Substring-as-fuzzy-matching** — Removed in v0.1. `palace_graph.py:_fuzzy_match` was `in` operator wrapped in misleading naming.
+- **Hardcoded dedup statistics** — Removed in v0.1. `dedup.py` had estimated duplicates as `int(len(ids) * 0.4)` rather than computing them.
 - **MemPalace's marketing claims** — The 96.6% LongMemEval score is largely ChromaDB's default behavior. The "memory palace architecture" is metadata strings on ChromaDB documents. MemAgora's value proposition is institutional memory, not benchmark performance, so none of this matters here.
 
 **Trajectory:** Over time, MemPalace's footprint in MemAgora is expected to shrink. The plumbing stays. The organizational metaphor stays. Layers that don't earn their keep get stripped or replaced as MemAgora matures. The repo today inherits more of MemPalace than it will a year from now, and that's intentional.
@@ -85,7 +85,7 @@ These are deliberately unresolved as of this writing. This document should be up
 - **Server framework** — FastAPI is the leading candidate (Python consistency with MemPalace, lightweight, async). Go is under consideration for single-binary deployment simplicity. No commitment yet.
 - **Database** — Postgres is the leading candidate for the reference implementation. The pluggable layer should not assume Postgres specifically.
 - **Hook vs backend integration** — Backend extension via `mempalace/backends/base.py` is the leading approach. The PreCompact hook may still need lightweight handling separately. Backend stability across MemPalace versions is a known risk; see "Known Risks" below.
-- **Subsystem pruning** — Which MemPalace subsystems to actively strip vs. leave dormant. AAAK and Layer 1 importance scoring are likely candidates for removal as the codebase matures, but not on day one. See [FOUNDATION.md](./FOUNDATION.md) for the current state.
+- **Subsystem pruning** — Which remaining inherited subsystems to actively strip vs. leave dormant. AAAK, Layer 1 importance scoring, the substring-as-fuzzy-matching helper, and hardcoded dedup statistics were stripped in v0.1. See [FOUNDATION.md](./FOUNDATION.md) for the remaining audit.
 
 ## MemAgora Project Structure (Target)
 
@@ -146,7 +146,15 @@ For tasks involving the inherited MemPalace plumbing (mining, search, the local 
 
 ## Known Risks
 
-- **Upstream churn** — MemPalace is young and shipping fast. Backend interface changes between versions could break MemAgora. Mitigation: pin MemPalace version, test before bumping, maintain a `mempalace-master` branch for tracking upstream cleanly.
+- **Upstream churn** — MemPalace is young and shipping fast. Backend interface changes between versions could break MemAgora. Mitigation: pin the upstream commit `mempalace-main` currently points to; advance only after manual testing of the `BaseBackend` / `BaseCollection` contract via the existing test suite. The `upstream` remote and `mempalace-main` branch already exist (see [ROADMAP.md](./ROADMAP.md) "Branch model"). The sync workflow:
+
+      git fetch upstream
+      git checkout mempalace-main
+      git merge --ff-only upstream/main
+      # Audit: git log master..mempalace-main, review each commit for path/contract impact
+      # Selectively cherry-pick or merge into a feature branch off master, then PR into master
+
+  We do not auto-track upstream. Every advance is gated on a contract review.
 - **Classifier quality** — The classifier prompt is the core novel piece of MemAgora and is inherently context-dependent. A poorly-tuned classifier either propagates noise or starves the agora. Each deployment will need to iterate on its prompt against real usage.
 - **Privacy expectations** — Engineers need confidence that the local-vs-team boundary is real. A single incident of raw content reaching the agora would damage trust. The classifier's default behavior must be conservative — when uncertain, content stays local.
 - **Inherited brittleness** — Several known bugs and design issues exist in the MemPalace code MemAgora inherits. Most do not affect MemAgora directly because the affected subsystems aren't on MemAgora's path. See [FOUNDATION.md](./FOUNDATION.md) for the audit and the current strip/keep status of each subsystem.

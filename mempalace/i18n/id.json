@@ -32,9 +32,6 @@
     "migrate_complete": "Migrasi selesai.",
     "no_palace": "Istana tidak ditemukan. Jalankan: mempalace init <dir>"
   },
-  "aaak": {
-    "instruction": "Ringkas ke format indeks. Gunakan tanda hubung (-) antar kata dan garis vertikal (|) antar konsep. Buang kata fungsi dan kata pengisi yang tidak penting. Pertahankan nama serta angka tetap persis."
-  },
   "regex": {
     "topic_pattern": "[A-Z][a-z]{2,}|[A-Za-z][A-Za-z0-9_/-]{2,}",
     "stop_words": "yang untuk pada ke para namun menurut antara dia ia seperti jika sehingga kembali dan tidak ini karena kepada oleh saat harus sementara setelah belum kami sekitar bagi serta di dari telah sebagai masih hal ketika adalah itu dalam bisa bahwa atau hanya kita dengan akan juga ada mereka sudah saya terhadap secara agar lain anda begitu mengapa kenapa yaitu yakni daripada itulah lagi maka tentang demi di mana ke mana pula sambil sebelum sesudah supaya guna kah pun sampai sedangkan selagi tetapi apakah kecuali sebab selain seolah seraya seterusnya tanpa agak boleh dapat dsb dst dll dahulu dulunya anu demikian tapi ingin nggak gak ga ngga enggak mari nanti melainkan oh ok oke seharusnya sebetulnya setiap setidaknya sesuatu pasti saja toh ya walau tolong tentu amat apalagi bagaimanapun udah banget bgt nih dong kok sih deh aja pun",

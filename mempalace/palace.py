@@ -9,7 +9,8 @@ import hashlib
 import os
 import re
 
-from .backends.chroma import ChromaBackend
+from .backends.base import BaseBackend
+from .backends.chroma import ChromaBackend  # noqa: F401  (kept for back-compat re-export)
 
 SKIP_DIRS = {
     ".git",
@@ -37,7 +38,32 @@ SKIP_DIRS = {
     "target",
 }
 
-_DEFAULT_BACKEND = ChromaBackend()
+# Lazily resolved through ``backends.registry`` so engineers can opt
+# into a non-default backend (e.g., the MemAgora wrapper) by setting
+# ``MEMPALACE_BACKEND=agora``. Resolution is deferred to first use so
+# the env var still wins when set after import.
+_DEFAULT_BACKEND: "BaseBackend | None" = None
+
+
+def _resolve_default_backend() -> BaseBackend:
+    """Return the cached default backend, resolving on first access.
+
+    Honors ``MEMPALACE_BACKEND`` per the storage-backend-plugin
+    priority order. Falls back to ``chroma`` when unset. Cached so
+    every palace in the same process shares the same backend instance.
+    """
+    global _DEFAULT_BACKEND
+    if _DEFAULT_BACKEND is None:
+        # Local import: registry triggers entry-point discovery, which
+        # imports backend modules. Doing it lazily keeps ``import
+        # mempalace.palace`` cheap when no ChromaDB call is imminent.
+        from .backends.registry import get_backend, resolve_backend_for_palace
+
+        name = resolve_backend_for_palace(
+            env_value=os.environ.get("MEMPALACE_BACKEND"),
+        )
+        _DEFAULT_BACKEND = get_backend(name)
+    return _DEFAULT_BACKEND
 
 # Schema version for drawer normalization. Bump when the normalization
 # pipeline changes in a way that existing drawers should be rebuilt to pick up
@@ -56,7 +82,7 @@ def get_collection(
     create: bool = True,
 ):
     """Get the palace collection through the backend layer."""
-    return _DEFAULT_BACKEND.get_collection(
+    return _resolve_default_backend().get_collection(
         palace_path,
         collection_name=collection_name,
         create=create,

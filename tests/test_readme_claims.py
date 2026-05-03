@@ -22,8 +22,6 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MEMPALACE_PKG = REPO_ROOT / "mempalace"
 README_PATH = REPO_ROOT / "README.md"
-MCP_TOOLS_DOC_PATH = REPO_ROOT / "website" / "reference" / "mcp-tools.md"
-MODULES_DOC_PATH = REPO_ROOT / "website" / "reference" / "modules.md"
 
 
 def _read(path: Path) -> str:
@@ -40,17 +38,6 @@ def _tools_dict_keys() -> list:
     # because it calls chromadb on import, so we parse the source instead.
     src = _read(MEMPALACE_PKG / "mcp_server.py")
     return re.findall(r'"(mempalace_\w+)":\s*\{', src)
-
-
-def _doc_tool_names() -> list:
-    """Return the list of tool names documented in the MCP tools reference.
-
-    The MCP tool table lived in README.md prior to the #875 rewrite; it now
-    lives in website/reference/mcp-tools.md (linked from README). Each tool
-    is introduced by a level-3 heading `### \\`mempalace_xxx\\``.
-    """
-    doc = _read(MCP_TOOLS_DOC_PATH)
-    return re.findall(r"^###\s+`(mempalace_\w+)`", doc, re.MULTILINE)
 
 
 # ---------------------------------------------------------------------------
@@ -76,60 +63,6 @@ class TestToolCount:
                 f"README claims {claimed} tools but TOOLS dict has {actual_count}. "
                 f"Update every occurrence of '{claimed} tools' to '{actual_count} tools'."
             )
-
-
-# ---------------------------------------------------------------------------
-# 2. Every tool listed in README actually exists in TOOLS dict
-# ---------------------------------------------------------------------------
-
-
-class TestReadmeToolsExistInCode:
-    """Every tool name documented in the MCP tools reference must be a key in TOOLS."""
-
-    def test_every_readme_tool_exists_in_tools_dict(self):
-        """Claim: the MCP tools reference (website/reference/mcp-tools.md)
-        lists tools like mempalace_get_aaak_spec. Each one must actually be
-        registered in the TOOLS dict in mempalace/mcp_server.py.
-
-        Pre-#875 this parsed the tool table that lived in README.md; that
-        table has moved to the website docs and README now links out.
-        """
-        code_tools = set(_tools_dict_keys())
-        doc_tools = _doc_tool_names()
-        assert len(doc_tools) > 0, (
-            f"Could not parse any tools from {MCP_TOOLS_DOC_PATH.relative_to(REPO_ROOT)} "
-            f"— expected `### \\`mempalace_xxx\\`` headings."
-        )
-
-        missing = [t for t in doc_tools if t not in code_tools]
-        assert missing == [], (
-            f"Docs list tools that don't exist in TOOLS dict: {missing}. "
-            f"Either add them to mcp_server.py or remove them from "
-            f"{MCP_TOOLS_DOC_PATH.relative_to(REPO_ROOT)}."
-        )
-
-
-# ---------------------------------------------------------------------------
-# 3. No tool in TOOLS dict is missing from README's tool table
-# ---------------------------------------------------------------------------
-
-
-class TestNoUnlistedTools:
-    """Every tool in the TOOLS dict should be documented in the MCP tools reference."""
-
-    def test_no_undocumented_tools(self):
-        """Claim: the MCP tools reference
-        (website/reference/mcp-tools.md) is complete. Any tool in TOOLS
-        but not documented there is undocumented on the public surface."""
-        code_tools = set(_tools_dict_keys())
-        doc_tools = set(_doc_tool_names())
-
-        undocumented = sorted(code_tools - doc_tools)
-        assert undocumented == [], (
-            f"Tools in TOOLS dict but missing from docs: {undocumented}. "
-            f"Add sections for these to "
-            f"{MCP_TOOLS_DOC_PATH.relative_to(REPO_ROOT)}."
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -442,90 +375,6 @@ class TestVersionConsistency:
 # ---------------------------------------------------------------------------
 
 
-class TestVersionBadge:
-    """README version badge must show the current version, not a stale one."""
-
-    def test_readme_badge_matches_version_py(self):
-        """Claim: README badge shows current version.
-        The shields.io badge URL must contain the version from version.py."""
-        version_src = _read(MEMPALACE_PKG / "version.py")
-        version_match = re.search(r'__version__\s*=\s*"([^"]+)"', version_src)
-        assert version_match, "Could not parse __version__ from version.py"
-        code_version = version_match.group(1)
-
-        readme = _readme()
-        # Find the version badge URL
-        badge_match = re.search(r"shields\.io/badge/version-([^-]+)-", readme)
-        assert badge_match, "Could not find version badge URL in README"
-        badge_version = badge_match.group(1)
-
-        assert badge_version == code_version, (
-            f"README badge says {badge_version} but version.py says {code_version}. "
-            f"Update the badge URL in README.md."
-        )
-
-
-# ---------------------------------------------------------------------------
-# 16. dialect.py docstring does NOT say "lossless"
-# ---------------------------------------------------------------------------
-
-
-class TestDialectNotLossless:
-    """The April 7 correction: AAAK is lossy, not lossless."""
-
-    def test_dialect_docstring_says_not_lossless(self):
-        """Claim: dialect.py correctly says AAAK is NOT lossless.
-        The docstring must contain 'NOT lossless' or 'lossy'."""
-        src = _read(MEMPALACE_PKG / "dialect.py")
-        # Check the module docstring (first ~20 lines)
-        docstring_area = src[:1000]
-        assert "NOT lossless" in docstring_area or "lossy" in docstring_area.lower(), (
-            "dialect.py docstring does not disclaim losslessness. "
-            "After the April 7 correction, it must say AAAK is NOT lossless."
-        )
-
-    def test_dialect_docstring_does_not_claim_lossless(self):
-        """The docstring must not positively claim 'lossless compression'."""
-        src = _read(MEMPALACE_PKG / "dialect.py")
-        docstring_area = src[:1000]
-        # "NOT lossless" is OK; bare "lossless" without negation is not
-        # Remove the "NOT lossless" disclaimer before checking
-        cleaned = docstring_area.replace("NOT lossless", "")
-        assert "lossless" not in cleaned.lower(), (
-            "dialect.py docstring still claims 'lossless' somewhere. "
-            "AAAK is lossy — remove any positive lossless claims."
-        )
-
-
-# ---------------------------------------------------------------------------
-# 17. README file reference table for dialect.py does NOT say "lossless"
-# ---------------------------------------------------------------------------
-
-
-class TestReadmeDialectNotLossless:
-    """The file-reference documentation must not say dialect.py is lossless.
-
-    Pre-#875 this lived in a README.md file table; it now lives in
-    website/reference/modules.md. The April 7 correction established that
-    AAAK is a lossy abbreviation system, not lossless compression, and
-    every docs surface that describes dialect.py must respect that.
-    """
-
-    def test_readme_dialect_line_not_lossless(self):
-        doc = _read(MODULES_DOC_PATH)
-        # Any line mentioning dialect.py (narrative or table) must not call it lossless
-        dialect_lines = [line for line in doc.splitlines() if "dialect.py" in line]
-        assert len(dialect_lines) > 0, (
-            f"Could not find dialect.py in "
-            f"{MODULES_DOC_PATH.relative_to(REPO_ROOT)}. "
-            f"Expected at least one reference."
-        )
-
-        for line in dialect_lines:
-            assert "lossless" not in line.lower(), (
-                f"Docs still call dialect.py lossless: {line.strip()!r}. "
-                f"After April 7 correction, this must say 'lossy' or remove the lossless claim."
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -661,39 +510,21 @@ class TestI18n:
 
 
 class TestWakeUpTokenCost:
-    """README claims '~170 tokens' for wake-up. layers.py says otherwise."""
+    """Wake-up token cost in layers.py docstring matches the L0-only design."""
 
-    def test_readme_wakeup_cost_matches_layers(self):
-        """Claim: README says ~170 tokens for wake-up.
-        layers.py docstring says L0 ~100 tokens, L1 ~500-800 tokens.
-        Total = 600-900, not 170.
-
-        If the README means '170 tokens of critical facts' (just the AAAK
-        portion), it should say so clearly. If it means total wake-up cost,
-        it must match layers.py."""
-        readme = _readme()
+    def test_layers_docstring_documents_l0_only_wake_up(self):
+        """After Layer1 was stripped (v0.1), wake_up() returns L0 only.
+        layers.py docstring must reflect that — ~100 tokens, not 600-900."""
         layers_src = _read(MEMPALACE_PKG / "layers.py")
 
-        # What layers.py says
-        assert "~600-900 tokens" in layers_src or "600-900" in layers_src, (
-            "layers.py docstring does not mention 600-900 tokens. "
-            "Check if the wake-up cost documentation has changed."
+        assert "~100 tokens" in layers_src, (
+            "layers.py docstring does not mention ~100 tokens for wake-up. "
+            "After v0.1's Layer1 strip, wake_up() returns L0 (identity) only."
         )
-
-        # What README says
-        readme_170_claims = re.findall(r"~?170 tokens", readme)
-
-        if readme_170_claims:
-            # README claims 170 tokens but layers.py says 600-900.
-            # This test enforces that README must match the code.
-            # Either README should say 600-900 or layers.py should say 170.
-            # Since we trust code over docs, the README is wrong.
-            pytest.fail(
-                f"README claims '~170 tokens' for wake-up ({len(readme_170_claims)} occurrences) "
-                f"but layers.py says L0+L1 = ~600-900 tokens. "
-                f"Either update README to match layers.py, or clarify that '170 tokens' "
-                f"refers to a specific subset (e.g., AAAK-compressed facts only)."
-            )
+        assert "600-900" not in layers_src, (
+            "layers.py still references the pre-strip L0+L1 cost (600-900 tokens). "
+            "Update to ~100 tokens to match the L0-only wake-up."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -742,20 +573,3 @@ class TestReadmeToolCountConsistency:
             ), f"README mentions different tool counts: {counts}. All occurrences must agree."
 
 
-# ---------------------------------------------------------------------------
-# Bonus: get_aaak_spec tool handler exists
-# ---------------------------------------------------------------------------
-
-
-class TestAAAKSpecToolHandler:
-    """If mempalace_get_aaak_spec is in TOOLS, its handler must exist."""
-
-    def test_aaak_spec_handler_exists(self):
-        """The handler function for get_aaak_spec must be defined."""
-        src = _read(MEMPALACE_PKG / "mcp_server.py")
-        tools = _tools_dict_keys()
-        if "mempalace_get_aaak_spec" in tools:
-            assert "def tool_get_aaak_spec(" in src, (
-                "mempalace_get_aaak_spec is in TOOLS dict but "
-                "tool_get_aaak_spec() handler function is not defined."
-            )

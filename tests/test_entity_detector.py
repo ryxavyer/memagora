@@ -422,7 +422,7 @@ def _temp_locale(locale_code: str, entity_section: dict):
 
     Note: writes into the real mempalace/i18n/ directory. If a test process is
     SIGKILLed mid-test the orphan zz-test-*.json file will break test_all_languages_load
-    on the next run (the fixture lacks the required terms/cli/aaak sections).
+    on the next run (the fixture lacks the required terms/cli sections).
     Recover with `rm mempalace/i18n/zz-test-*.json`.
     """
     from mempalace import i18n
@@ -437,7 +437,6 @@ def _temp_locale(locale_code: str, entity_section: dict):
         "label": locale_code,
         "terms": {},
         "cli": {},
-        "aaak": {"instruction": "test"},
         "entity": entity_section,
     }
     locale_path.write_text(json.dumps(payload), encoding="utf-8")
