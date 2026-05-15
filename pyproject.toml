@@ -91,11 +91,12 @@ quote-style = "double"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-m 'not benchmark and not slow and not stress'"
+addopts = "-m 'not benchmark and not slow and not stress and not live'"
 markers = [
     "benchmark: scale/performance benchmark tests",
     "slow: tests that take more than 30 seconds",
     "stress: destructive scale tests (100K+ drawers)",
+    "live: tests that hit a real LLM API; require ANTHROPIC_API_KEY (skipped by default; run with `pytest -m live`)",
 ]
 
 [tool.coverage.run]

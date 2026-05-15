@@ -67,9 +67,7 @@ class AgoraCollection(BaseCollection):
         metadatas=None,
         embeddings=None,
     ) -> None:
-        self._inner.add(
-            documents=documents, ids=ids, metadatas=metadatas, embeddings=embeddings
-        )
+        self._inner.add(documents=documents, ids=ids, metadatas=metadatas, embeddings=embeddings)
         self._maybe_audit("add", ids)
 
     def upsert(
@@ -80,9 +78,7 @@ class AgoraCollection(BaseCollection):
         metadatas=None,
         embeddings=None,
     ) -> None:
-        self._inner.upsert(
-            documents=documents, ids=ids, metadatas=metadatas, embeddings=embeddings
-        )
+        self._inner.upsert(documents=documents, ids=ids, metadatas=metadatas, embeddings=embeddings)
         self._maybe_audit("upsert", ids)
 
     def update(
@@ -93,9 +89,7 @@ class AgoraCollection(BaseCollection):
         metadatas=None,
         embeddings=None,
     ) -> None:
-        self._inner.update(
-            ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
-        )
+        self._inner.update(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
         # update is a metadata-only mutation in many cases; no audit
         # entry — v0.2 may revisit if classifier behavior dictates.
 
@@ -125,21 +119,22 @@ class AgoraCollection(BaseCollection):
     # ── Audit hook ──────────────────────────────────────────────────────
 
     def _maybe_audit(self, op: str, ids: list[str]) -> None:
-        """Record one audit entry per write when an endpoint is configured.
+        """Record one ``drawer_write`` audit entry per id when an endpoint
+        is configured.
 
-        v0.1: writes a stub entry indicating what the classifier *would
-        have* been called on. v0.2 replaces ``would_classify=True`` with
-        actual classification output and adds an entry per emitted
-        FactPayload.
+        These entries trace which chunks landed in palace storage. They
+        sit alongside ``classify`` entries (written by the hook-driven
+        classifier path, not from here) and engineers can filter by
+        ``entry_type`` to separate the two flows.
         """
         if not self._config.enabled:
             return
         for doc_id in ids:
             write_audit_entry(
                 {
+                    "entry_type": "drawer_write",
                     "op": op,
                     "id": doc_id,
-                    "would_classify": True,
                     "dry_run": self._config.dry_run,
                 }
             )

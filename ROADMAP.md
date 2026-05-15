@@ -64,15 +64,20 @@ Goal: stand up the new package layout and the backend-wrapper integration point.
 
 **Verification:** 1483 tests passing, 0 failures. Smoke test: `MEMPALACE_BACKEND=agora MEMPALACE_AGORA_ENDPOINT=http://example.invalid python -c "from mempalace.palace import get_collection; ..."` produces audit-log entries without network activity.
 
-## v0.2 — Classifier + audit
+## v0.2 — Classifier + audit (shipped 2026-05-15)
 
 Goal: the local half of the palace-to-agora pipe works end to end on the engineer's machine.
 
-- Default conservative classifier prompt with documented heuristics for what counts as a team-relevant fact (decisions, contracts, deprecations, ownership) versus what stays in the palace (raw conversation, exploration, debugging).
-- Local audit log: every classifier output, whether posted or not, mirrored to a local file the engineer can inspect. Append-only, JSONL.
-- `memagora audit` CLI: `tail`, `export`, `diff` (compare what was sent vs. what the agora returns).
-- Test harness: fixture conversations with expected classifier outputs. Treat the classifier as a model under evaluation, not a black box.
-- Hook integration: Stop and PreCompact hooks fire the classifier on the just-completed turn(s). Performance budget: classifier runs in the background, no chat-window tokens, no impact on the existing 500ms hook budget.
+- ✓ Real classifier (`mempalace/classifier.py`) replaces v0.1 stub. Calls the inherited `llm_client.get_provider()` (stdlib `urllib`, no new HTTP deps), parses JSON output into `FactPayload` objects, caps emission at `AgoraConfig.max_facts_per_turn`, swallows every error path (LLM failure, malformed response, missing key) and returns `[]` so nothing leaks on failure.
+- ✓ Default conservative classifier prompt at `mempalace/classifier_prompts/default.md`. Documents decisions/contracts/deprecations/ownership as emit-worthy and exploration/debugging/hypotheticals as not. Configurable per deployment via `AgoraConfig.classifier_prompt_path`.
+- ✓ `AgoraConfig` extended with LLM provider/model/endpoint/api-key plus `max_facts_per_turn` and `transcript_last_n`. Default is anthropic + claude-haiku-4-5; auto-reads `ANTHROPIC_API_KEY` so Claude Code users get zero-config classification.
+- ✓ `mempalace classify <transcript>` CLI subcommand — used by hooks. Backgroundable; no-op when `MEMPALACE_AGORA_ENDPOINT` is unset.
+- ✓ `mempalace audit` CLI with nested `tail` / `export` subactions (model: existing `mempalace hook run` pattern). `audit diff` deferred to v0.3 when a live agora exists to diff against.
+- ✓ Audit log now distinguishes two entry families via `entry_type`: `drawer_write` (from v0.1 `AgoraCollection._maybe_audit`) and `classify` (new in v0.2, one per emitted FactPayload).
+- ✓ Hook integration: `mempal_save_hook.sh` backgrounds `mempalace classify "$TRANSCRIPT_PATH" &` after mining; `mempal_precompact_hook.sh` runs it synchronously before compaction. Stays under the 500ms hook budget in the save path.
+- ✓ Classifier eval harness at `tests/test_classifier_eval.py` with 7 fixture conversations (explicit decisions, ownership, SLAs, exploratory non-facts, debugging without resolution, hypotheticals, low-confidence dropping). Mocked-LLM layer runs in CI; live layer gated by the new `live` pytest marker (`pytest -m live`, requires `ANTHROPIC_API_KEY`).
+
+**Verification:** 1554 tests passing (3 skipped, 7 live-marker deselected), `ruff check` and `ruff format --check` clean, all CLI subcommands dispatch correctly. The classifier reads recent transcript turns, calls Claude via the inherited LLM client, parses JSON into FactPayloads, and writes one `entry_type: "classify"` audit entry per fact — with no actual network POST to an agora server until v0.3 ships one.
 
 ## v0.3 — Reference agora server
 

@@ -10,7 +10,6 @@ Verifies:
 
 from unittest.mock import MagicMock
 
-import pytest
 
 from mempalace import audit as audit_module
 from mempalace.backend_agora import AgoraBackend, AgoraCollection
@@ -95,7 +94,7 @@ def test_enabled_add_writes_one_audit_per_id(tmp_path, monkeypatch):
     assert len(entries) == 3
     assert [e["id"] for e in entries] == ["id1", "id2", "id3"]
     assert all(e["op"] == "add" for e in entries)
-    assert all(e["would_classify"] is True for e in entries)
+    assert all(e["entry_type"] == "drawer_write" for e in entries)
     assert all(e["dry_run"] is True for e in entries)
 
 
@@ -110,6 +109,7 @@ def test_enabled_upsert_records_dry_run_false_when_configured(tmp_path, monkeypa
     entries = audit_module.read_audit_entries(audit_path)
     assert len(entries) == 1
     assert entries[0]["op"] == "upsert"
+    assert entries[0]["entry_type"] == "drawer_write"
     assert entries[0]["dry_run"] is False
 
 
@@ -122,9 +122,7 @@ def test_enabled_does_not_attempt_network_call(tmp_path, monkeypatch):
     monkeypatch.setattr(
         socket,
         "socket",
-        lambda *a, **k: (_ for _ in ()).throw(
-            RuntimeError("v0.1 must not make network calls")
-        ),
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("v0.1 must not make network calls")),
     )
 
     inner = _make_inner()

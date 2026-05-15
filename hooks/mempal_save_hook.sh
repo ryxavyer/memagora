@@ -201,6 +201,15 @@ if [ "$SINCE_LAST" -ge "$SAVE_INTERVAL" ] && [ "$EXCHANGE_COUNT" -gt 0 ]; then
             >> "$STATE_DIR/hook.log" 2>&1 &
     fi
 
+    # MemAgora classifier — fire on the just-completed turns. Backgrounded
+    # so it does not contend with the 500ms hook budget; LLM calls take
+    # 1–5 seconds. No-op when MEMPALACE_AGORA_ENDPOINT is unset (cmd_classify
+    # short-circuits via AgoraConfig.enabled).
+    if is_valid_transcript_path "$TRANSCRIPT_PATH" && [ -f "$TRANSCRIPT_PATH" ]; then
+        mempalace classify "$TRANSCRIPT_PATH" --session-id "$SESSION_ID" \
+            >> "$STATE_DIR/classify.log" 2>&1 &
+    fi
+
     # MEMPAL_VERBOSE toggle:
     #   true  = developer mode — block and show diaries/code in chat
     #   false = silent mode (default) — save in background, no chat clutter

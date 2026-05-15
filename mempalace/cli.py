@@ -309,8 +309,7 @@ def cmd_init(args):
                 )
         except LLMError as e:
             print(
-                f"  LLM init failed ({e}). "
-                f"Running heuristics-only — pass --no-llm to silence this."
+                f"  LLM init failed ({e}). Running heuristics-only — pass --no-llm to silence this."
             )
 
     # Pass 0: detect whether the corpus is AI-dialogue. Writes
@@ -781,6 +780,57 @@ def cmd_instructions(args):
     run_instructions(name=args.name)
 
 
+def cmd_audit(args):
+    """Inspect the MemAgora local audit log."""
+    from .audit_cli import run_audit
+
+    return run_audit(
+        action=args.audit_action,
+        limit=getattr(args, "limit", 10),
+        output=getattr(args, "output", None),
+    )
+
+
+def cmd_classify(args):
+    """Classify the last N turns of a transcript and record to the audit log.
+
+    Invoked by ``mempal_save_hook.sh`` (background) and
+    ``mempal_precompact_hook.sh`` (synchronous). No-op when
+    ``MEMPALACE_AGORA_ENDPOINT`` is unset.
+    """
+    import dataclasses
+
+    from .audit import write_audit_entry
+    from .classifier import classify_transcript
+    from .config_agora import load_agora_config
+
+    cfg = load_agora_config()
+    if not cfg.enabled:
+        # No endpoint configured — classifier is a no-op. Silent return
+        # so engineers can install hooks without configuring MemAgora.
+        return
+
+    facts = classify_transcript(
+        Path(args.transcript),
+        last_n=args.last_n,
+        config=cfg,
+        source_session_id=args.session_id,
+    )
+
+    for fact in facts:
+        write_audit_entry(
+            {
+                "entry_type": "classify",
+                "op": "classified",
+                "session_id": args.session_id,
+                "fact": dataclasses.asdict(fact),
+                "dry_run": cfg.dry_run,
+            }
+        )
+    # v0.2: no POST. client.post_facts() stays a stub until v0.3 ships
+    # the agora server it would point at.
+
+
 def cmd_mcp(args):
     """Show how to wire MemPalace into MCP-capable hosts."""
     base_server_cmd = "mempalace-mcp"
@@ -1031,6 +1081,28 @@ def main():
     for instr_name in ["init", "search", "mine", "help", "status"]:
         instructions_sub.add_parser(instr_name, help=f"Output {instr_name} instructions")
 
+    # audit — MemAgora local audit log inspection
+    p_audit = sub.add_parser(
+        "audit",
+        help="Inspect the MemAgora audit log (~/.mempalace/audit.jsonl)",
+    )
+    audit_sub = p_audit.add_subparsers(dest="audit_action")
+    p_audit_tail = audit_sub.add_parser("tail", help="Show the last N audit entries")
+    p_audit_tail.add_argument(
+        "-n",
+        "--limit",
+        type=int,
+        default=10,
+        help="Number of entries to show (default: 10)",
+    )
+    p_audit_export = audit_sub.add_parser("export", help="Dump full audit log as JSONL")
+    p_audit_export.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Output file path (default: stdout)",
+    )
+
     # repair
     p_repair = sub.add_parser(
         "repair",
@@ -1115,6 +1187,24 @@ def main():
 
     sub.add_parser("status", help="Show what's been filed")
 
+    # classify — MemAgora hook entry point
+    p_classify = sub.add_parser(
+        "classify",
+        help="Classify the last N turns of a transcript and record to the audit log",
+    )
+    p_classify.add_argument("transcript", help="Path to Claude Code JSONL transcript")
+    p_classify.add_argument(
+        "--last-n",
+        type=int,
+        default=None,
+        help="How many user turns to include (default: AgoraConfig.transcript_last_n)",
+    )
+    p_classify.add_argument(
+        "--session-id",
+        default=None,
+        help="Engineer's local session ID (for audit provenance)",
+    )
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1138,6 +1228,13 @@ def main():
         cmd_instructions(args)
         return
 
+    if args.command == "audit":
+        if not getattr(args, "audit_action", None):
+            p_audit.print_help()
+            return
+        cmd_audit(args)
+        return
+
     dispatch = {
         "init": cmd_init,
         "mine": cmd_mine,
@@ -1150,6 +1247,7 @@ def main():
         "repair-status": cmd_repair_status,
         "migrate": cmd_migrate,
         "status": cmd_status,
+        "classify": cmd_classify,
     }
     dispatch[args.command](args)
 

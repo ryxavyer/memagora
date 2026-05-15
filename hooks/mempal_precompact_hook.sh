@@ -118,6 +118,15 @@ if [ -n "$MEMPAL_DIR" ] && [ -d "$MEMPAL_DIR" ]; then
         >> "$STATE_DIR/hook.log" 2>&1
 fi
 
+# MemAgora classifier — run synchronously because compaction is imminent
+# and we'd lose the conversation context otherwise. No-op when
+# MEMPALACE_AGORA_ENDPOINT is unset (cmd_classify short-circuits via
+# AgoraConfig.enabled).
+if is_valid_transcript_path "$TRANSCRIPT_PATH" && [ -f "$TRANSCRIPT_PATH" ]; then
+    mempalace classify "$TRANSCRIPT_PATH" --session-id "$SESSION_ID" \
+        >> "$STATE_DIR/classify.log" 2>&1
+fi
+
 # Silent: return empty JSON to not block. "decision": "allow" is invalid —
 # only "block" or {} are recognized.
 echo '{}'

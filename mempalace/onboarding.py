@@ -285,18 +285,14 @@ def _generate_critical_facts_bootstrap(
         facts_lines.append("## People (personal)")
         for p in personal_people:
             rel = p.get("relationship", "")
-            facts_lines.append(
-                f"- **{p['name']}** — {rel}" if rel else f"- **{p['name']}**"
-            )
+            facts_lines.append(f"- **{p['name']}** — {rel}" if rel else f"- **{p['name']}**")
         facts_lines.append("")
 
     if work_people:
         facts_lines.append("## People (work)")
         for p in work_people:
             rel = p.get("relationship", "")
-            facts_lines.append(
-                f"- **{p['name']}** — {rel}" if rel else f"- **{p['name']}**"
-            )
+            facts_lines.append(f"- **{p['name']}** — {rel}" if rel else f"- **{p['name']}**")
         facts_lines.append("")
 
     if projects:

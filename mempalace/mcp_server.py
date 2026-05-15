@@ -631,7 +631,7 @@ def tool_check_duplicate(content: str, threshold: float = 0.9):
             "vector_disabled": True,
             "vector_disabled_reason": _vector_disabled_reason,
             "hint": (
-                "duplicate detection requires vector search; run " "`mempalace repair` to restore"
+                "duplicate detection requires vector search; run `mempalace repair` to restore"
             ),
         }
     try:

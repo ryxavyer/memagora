@@ -274,5 +274,3 @@ class TestGraphStats:
         assert stats["tunnel_rooms"] == 1
         assert stats["total_edges"] == 1
         assert "wing_code" in stats["rooms_per_wing"]
-
-

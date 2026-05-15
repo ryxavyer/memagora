@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from mempalace.cli import (
+    cmd_classify,
     cmd_hook,
     cmd_init,
     cmd_instructions,
@@ -790,3 +791,80 @@ def test_cmd_repair_trailing_slash_does_not_recurse():
     palace_path = os.path.expanduser(args.palace).rstrip(os.sep)
     backup_path = palace_path + ".backup"
     assert not backup_path.startswith(palace_path + os.sep)
+
+
+# ── cmd_classify ───────────────────────────────────────────────────────
+
+
+def test_cmd_classify_noop_when_endpoint_unset(tmp_path, monkeypatch):
+    """No MEMPALACE_AGORA_ENDPOINT → cmd_classify returns silently, no audit write."""
+    from mempalace import audit as audit_module
+
+    audit_path = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(audit_module, "_default_audit_path", lambda: audit_path)
+
+    # Clear every env var that could enable the wrapper
+    for var in (
+        "MEMPALACE_AGORA_ENDPOINT",
+        "MEMPALACE_AGORA_API_KEY",
+        "MEMPALACE_AGORA_LLM_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    args = argparse.Namespace(
+        transcript=str(tmp_path / "nope.jsonl"),
+        last_n=None,
+        session_id="s-1",
+    )
+    cmd_classify(args)  # silent no-op
+    assert not audit_path.exists()
+
+
+def test_cmd_classify_writes_audit_entries_for_each_fact(tmp_path, monkeypatch):
+    """Each emitted FactPayload becomes one entry_type=classify audit entry.
+
+    Patches classify_transcript at its source module since cmd_classify imports
+    it locally inside the function body.
+    """
+    from contracts import FactPayload
+    from mempalace import audit as audit_module
+
+    audit_path = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(audit_module, "_default_audit_path", lambda: audit_path)
+
+    monkeypatch.setenv("MEMPALACE_AGORA_ENDPOINT", "https://test.example")
+    canned_facts = [
+        FactPayload(subject="a", predicate="is", object="b", confidence=0.9),
+        FactPayload(subject="c", predicate="is", object="d", confidence=0.8),
+    ]
+    monkeypatch.setattr(
+        "mempalace.classifier.classify_transcript",
+        lambda path, **kw: canned_facts,
+    )
+
+    args = argparse.Namespace(
+        transcript=str(tmp_path / "transcript.jsonl"),
+        last_n=15,
+        session_id="s-42",
+    )
+    cmd_classify(args)
+
+    entries = audit_module.read_audit_entries(audit_path)
+    assert len(entries) == 2
+    assert all(e["entry_type"] == "classify" for e in entries)
+    assert all(e["op"] == "classified" for e in entries)
+    assert all(e["session_id"] == "s-42" for e in entries)
+    assert entries[0]["fact"]["subject"] == "a"
+    assert entries[1]["fact"]["subject"] == "c"
+
+
+def test_main_classify_dispatches():
+    """`mempalace classify <transcript>` dispatches to cmd_classify."""
+    with (
+        patch("sys.argv", ["mempalace", "classify", "/tmp/fake.jsonl"]),
+        patch("mempalace.cli.cmd_classify") as mock_cmd,
+    ):
+        main()
+        mock_cmd.assert_called_once()

@@ -65,6 +65,7 @@ def _resolve_default_backend() -> BaseBackend:
         _DEFAULT_BACKEND = get_backend(name)
     return _DEFAULT_BACKEND
 
+
 # Schema version for drawer normalization. Bump when the normalization
 # pipeline changes in a way that existing drawers should be rebuilt to pick up
 # (e.g., new noise-stripping rules). `file_already_mined` treats drawers with
