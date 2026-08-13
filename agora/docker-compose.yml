@@ -1,0 +1,52 @@
+# Reference single-team deployment.
+#
+#   cd agora
+#   cp .env.example .env          # set AGORA_DEPLOYMENT_ID and a real password
+#   docker compose up -d
+#   docker compose exec agora agora-admin migrate
+#   docker compose exec agora agora-admin issue-key --engineer alice
+#
+# One deployment per team: this file stands up one server and one database that
+# nothing else shares. Two teams run two copies of this stack — that is the
+# isolation model, with the deployment_id column as the second line of defence.
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agora}
+      POSTGRES_USER: ${POSTGRES_USER:-agora}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - agora-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agora} -d ${POSTGRES_DB:-agora}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Not published to the host: only the agora service needs to reach it.
+    expose:
+      - "5432"
+
+  agora:
+    build:
+      # Repository root — the image needs contracts/ as well as agora/.
+      context: ..
+      dockerfile: agora/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      AGORA_STORE: postgres
+      AGORA_DSN: postgresql://${POSTGRES_USER:-agora}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-agora}
+      AGORA_DEPLOYMENT_ID: ${AGORA_DEPLOYMENT_ID:?set AGORA_DEPLOYMENT_ID in .env}
+      # Migrations are an operator action, not a side effect of a restart.
+      AGORA_AUTO_MIGRATE: "false"
+      AGORA_LOG_LEVEL: ${AGORA_LOG_LEVEL:-info}
+    ports:
+      - "${AGORA_BIND:-127.0.0.1:8000}:8000"
+
+volumes:
+  agora-db:

@@ -860,6 +860,157 @@ def test_cmd_classify_writes_audit_entries_for_each_fact(tmp_path, monkeypatch):
     assert entries[1]["fact"]["subject"] == "c"
 
 
+def _classify_env(tmp_path, monkeypatch, *, facts, dry_run):
+    """Wire cmd_classify to a canned classifier and a temp audit log."""
+    from mempalace import audit as audit_module
+
+    audit_path = tmp_path / "audit.jsonl"
+    monkeypatch.setattr(audit_module, "_default_audit_path", lambda: audit_path)
+    monkeypatch.setenv("MEMPALACE_AGORA_ENDPOINT", "https://agora.test.example")
+    monkeypatch.setenv("MEMPALACE_AGORA_API_KEY", "ak_1.supersecret")
+    monkeypatch.setenv("MEMPALACE_AGORA_DRY_RUN", "1" if dry_run else "0")
+    monkeypatch.setattr("mempalace.classifier.classify_transcript", lambda path, **kw: facts)
+
+    posted = []
+
+    def fake_post(facts_arg, **kwargs):
+        from contracts import PostFactsResponse
+
+        posted.append((facts_arg, kwargs))
+        return PostFactsResponse(accepted=len(facts_arg), rejected=0, message=None)
+
+    monkeypatch.setattr("mempalace.client.post_facts", fake_post)
+
+    args = argparse.Namespace(
+        transcript=str(tmp_path / "transcript.jsonl"), last_n=None, session_id="s-42"
+    )
+    return audit_module, audit_path, posted, args
+
+
+def test_cmd_classify_does_not_post_in_dry_run(tmp_path, monkeypatch):
+    """Dry run is the default and the whole point: classify, audit, send nothing."""
+    from contracts import FactPayload
+
+    facts = [FactPayload(subject="a", predicate="is", object="b")]
+    audit_module, audit_path, posted, args = _classify_env(
+        tmp_path, monkeypatch, facts=facts, dry_run=True
+    )
+
+    cmd_classify(args)
+
+    assert posted == []
+    entries = audit_module.read_audit_entries(audit_path)
+    assert [e["entry_type"] for e in entries] == ["classify"]
+    assert entries[0]["dry_run"] is True
+
+
+def test_cmd_classify_posts_when_dry_run_is_off(tmp_path, monkeypatch):
+    from contracts import FactPayload
+
+    facts = [
+        FactPayload(subject="a", predicate="is", object="b"),
+        FactPayload(subject="c", predicate="is", object="d"),
+    ]
+    audit_module, audit_path, posted, args = _classify_env(
+        tmp_path, monkeypatch, facts=facts, dry_run=False
+    )
+
+    cmd_classify(args)
+
+    assert len(posted) == 1
+    sent_facts, kwargs = posted[0]
+    assert sent_facts == facts
+    assert kwargs["endpoint"] == "https://agora.test.example"
+    assert kwargs["api_key"] == "ak_1.supersecret"
+    assert kwargs["timeout"] == 5.0
+
+
+def test_cmd_classify_records_the_post_outcome(tmp_path, monkeypatch):
+    from contracts import FactPayload
+
+    facts = [FactPayload(subject="a", predicate="is", object="b")]
+    audit_module, audit_path, _, args = _classify_env(
+        tmp_path, monkeypatch, facts=facts, dry_run=False
+    )
+
+    cmd_classify(args)
+
+    entries = audit_module.read_audit_entries(audit_path)
+    assert [e["entry_type"] for e in entries] == ["classify", "post"]
+    post_entry = entries[-1]
+    assert post_entry["endpoint"] == "https://agora.test.example"
+    assert (post_entry["fact_count"], post_entry["accepted"], post_entry["rejected"]) == (1, 1, 0)
+    assert post_entry["ok"] is True
+    assert post_entry["session_id"] == "s-42"
+
+
+def test_cmd_classify_never_writes_the_api_key_to_the_audit_log(tmp_path, monkeypatch):
+    """The audit log is the engineer's record of what left — not a credential store."""
+    from contracts import FactPayload
+
+    facts = [FactPayload(subject="a", predicate="is", object="b")]
+    _, audit_path, _, args = _classify_env(tmp_path, monkeypatch, facts=facts, dry_run=False)
+
+    cmd_classify(args)
+
+    assert "supersecret" not in audit_path.read_text()
+
+
+def test_cmd_classify_records_a_failed_post(tmp_path, monkeypatch):
+    from contracts import FactPayload, PostFactsResponse
+
+    facts = [FactPayload(subject="a", predicate="is", object="b")]
+    audit_module, audit_path, _, args = _classify_env(
+        tmp_path, monkeypatch, facts=facts, dry_run=False
+    )
+    monkeypatch.setattr(
+        "mempalace.client.post_facts",
+        lambda f, **kw: PostFactsResponse(accepted=0, rejected=len(f), message="cannot reach host"),
+    )
+
+    cmd_classify(args)
+
+    post_entry = audit_module.read_audit_entries(audit_path)[-1]
+    assert post_entry["ok"] is False
+    assert post_entry["message"] == "cannot reach host"
+
+
+def test_cmd_classify_does_not_post_when_there_are_no_facts(tmp_path, monkeypatch):
+    audit_module, audit_path, posted, args = _classify_env(
+        tmp_path, monkeypatch, facts=[], dry_run=False
+    )
+
+    cmd_classify(args)
+
+    assert posted == []
+    assert audit_module.read_audit_entries(audit_path) == []
+
+
+def test_cmd_classify_survives_a_raising_client(tmp_path, monkeypatch):
+    """post_facts promises never to raise; if it ever does, the hook still must not.
+
+    This runs inside a Claude Code hook — an exception escaping here would end
+    the engineer's session over someone else's outage.
+    """
+    from contracts import FactPayload
+
+    facts = [FactPayload(subject="a", predicate="is", object="b")]
+    audit_module, audit_path, _, args = _classify_env(
+        tmp_path, monkeypatch, facts=facts, dry_run=False
+    )
+
+    def boom(*a, **kw):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr("mempalace.client.post_facts", boom)
+
+    cmd_classify(args)  # must not raise
+
+    post_entry = audit_module.read_audit_entries(audit_path)[-1]
+    assert post_entry["ok"] is False
+    assert "client error" in post_entry["message"]
+
+
 def test_main_classify_dispatches():
     """`mempalace classify <transcript>` dispatches to cmd_classify."""
     with (

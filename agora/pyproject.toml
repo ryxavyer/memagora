@@ -1,0 +1,59 @@
+[project]
+name = "memagora-agora"
+version = "0.3.0"
+description = "MemAgora team server — stores classified facts from engineers' palaces as a shared temporal knowledge graph."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+    {name = "MemAgora contributors"},
+]
+keywords = ["memagora", "knowledge-graph", "team-memory", "fastapi"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Deployed per team, never installed alongside the engineer-side package —
+# that is why FastAPI and psycopg live here and not in the root pyproject.
+# The only shared code is `contracts`, which has no dependencies of its own.
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.6",
+    "psycopg[binary]>=3.1",
+    "memagora-contracts>=0.1.0",
+]
+
+[project.scripts]
+agora-server = "agora.main:main"
+agora-admin = "agora.admin:main"
+
+# Third-party storage backends register here. See agora/storage/__init__.py.
+[project.entry-points."agora.stores"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "httpx>=0.27"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# The package IS this directory (agora/api/, agora/storage/, … as documented in
+# AGENTS.md), so the usual `packages = ["agora"]` — which looks for agora/agora/
+# — would build an empty wheel. Map the project root onto the import name
+# instead, and keep packaging files out of the distribution.
+[tool.hatch.build.targets.wheel]
+force-include = {"." = "agora"}
+exclude = [
+    "pyproject.toml",
+    "*.sqlite3",
+    "**/__pycache__",
+    "**/*.pyc",
+]

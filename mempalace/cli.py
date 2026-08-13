@@ -788,6 +788,7 @@ def cmd_audit(args):
         action=args.audit_action,
         limit=getattr(args, "limit", 10),
         output=getattr(args, "output", None),
+        strict=getattr(args, "strict", False),
     )
 
 
@@ -827,8 +828,47 @@ def cmd_classify(args):
                 "dry_run": cfg.dry_run,
             }
         )
-    # v0.2: no POST. client.post_facts() stays a stub until v0.3 ships
-    # the agora server it would point at.
+
+    # The audit entries above are written whether or not anything is sent —
+    # dry-run mode exists so an engineer can read exactly what would cross
+    # before it does. Only past this point does anything leave the machine.
+    if cfg.dry_run or not facts:
+        return
+
+    from contracts import PostFactsResponse
+
+    from .client import post_facts
+
+    try:
+        response = post_facts(
+            facts,
+            endpoint=cfg.endpoint,
+            api_key=cfg.api_key,
+            timeout=cfg.post_timeout,
+        )
+    except Exception as exc:
+        # post_facts promises never to raise. Belt and braces anyway: this runs
+        # inside a Claude Code hook, and an exception escaping here would break
+        # the engineer's session over someone else's outage.
+        response = PostFactsResponse(
+            accepted=0, rejected=len(facts), message=f"client error: {exc}"
+        )
+
+    # One entry per batch, recording where it went and what the server said.
+    # The API key is never written to the log.
+    write_audit_entry(
+        {
+            "entry_type": "post",
+            "op": "posted",
+            "session_id": args.session_id,
+            "endpoint": cfg.endpoint,
+            "fact_count": len(facts),
+            "accepted": response.accepted,
+            "rejected": response.rejected,
+            "message": response.message,
+            "ok": response.accepted > 0 or response.rejected == 0,
+        }
+    )
 
 
 def cmd_mcp(args):
@@ -1102,6 +1142,22 @@ def main():
         default=None,
         help="Output file path (default: stdout)",
     )
+    p_audit_diff = audit_sub.add_parser(
+        "diff",
+        help="Compare the local audit log against what the team agora holds",
+    )
+    p_audit_diff.add_argument(
+        "-n",
+        "--limit",
+        type=int,
+        default=500,
+        help="Maximum facts to fetch from the agora (default: 500)",
+    )
+    p_audit_diff.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero when facts exist locally but not in the agora",
+    )
 
     # repair
     p_repair = sub.add_parser(
@@ -1231,9 +1287,9 @@ def main():
     if args.command == "audit":
         if not getattr(args, "audit_action", None):
             p_audit.print_help()
-            return
-        cmd_audit(args)
-        return
+            return 2
+        # Propagated: `audit diff --strict` is meant to be usable in a script.
+        return cmd_audit(args)
 
     dispatch = {
         "init": cmd_init,
@@ -1253,4 +1309,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # The console-script wrapper already does sys.exit(main()); match it here
+    # so `python -m mempalace.cli` reports the same exit codes.
+    sys.exit(main())

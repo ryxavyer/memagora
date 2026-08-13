@@ -78,14 +78,18 @@ The agora server itself is a separate deployable unit. Each team stands up their
 
 The core invariant: **regardless of deployment configuration, the engineer's local palace experience is unchanged**. MemAgora additions are strictly additive at the local level.
 
-## Open Architectural Decisions
+## Architectural Decisions
 
-These are deliberately unresolved as of this writing. This document should be updated as they're decided:
+**Decided:**
 
-- **Server framework** — FastAPI is the leading candidate (Python consistency with MemPalace, lightweight, async). Go is under consideration for single-binary deployment simplicity. No commitment yet.
-- **Database** — Postgres is the leading candidate for the reference implementation. The pluggable layer should not assume Postgres specifically.
-- **Hook vs backend integration** — Backend extension via `mempalace/backends/base.py` is the leading approach. The PreCompact hook may still need lightweight handling separately. Backend stability across MemPalace versions is a known risk; see "Known Risks" below.
+- **Server framework — FastAPI** (v0.3). Python consistency with the rest of the codebase won over Go's single-binary story; the Docker image is the deployment unit either way. `agora/app.py` exposes `create_app(config=..., store=...)`, so the framework is confined to the HTTP edge.
+- **Database — Postgres as the reference** (v0.3), behind the `AgoraStore` interface in `agora/storage/base.py`. SQLite ships alongside it, which is what keeps the abstraction honest: two real implementations pass the same conformance suite. Nothing above the storage layer knows which one is running.
+- **Hook vs backend integration — the hook path won** (v0.2/v0.3). Classification runs from `mempalace classify` invoked by the save and precompact hooks, not from inside the backend wrapper. `backend_agora.py` still audits drawer writes, but the classifier never plugs into `_maybe_audit` as v0.1 anticipated: the hook has the transcript, and the backend only has chunks.
+
+**Still open:**
+
 - **Subsystem pruning** — Which remaining inherited subsystems to actively strip vs. leave dormant. AAAK, Layer 1 importance scoring, the substring-as-fuzzy-matching helper, and hardcoded dedup statistics were stripped in v0.1. See [FOUNDATION.md](./FOUNDATION.md) for the remaining audit.
+- **Upstream backend stability** — MemAgora extends `mempalace/backends/base.py`; interface changes upstream could break it. See "Known Risks" below.
 
 ## MemAgora Project Structure (Target)
 
@@ -102,10 +106,15 @@ Two top-level code directories matching the two deployment units, plus a neutral
     ├── config.py            # Endpoint, API key, classifier prompt (merged with inherited config at rename)
     └── core.py              # Was palace.py; renamed to avoid the palace/palace.py collision
     
-    agora/                   # Deployable team server (separate dependency profile)
-    ├── api/                 # HTTP endpoints
-    ├── models/              # Knowledge graph schema
-    ├── storage/             # Pluggable storage backends (Postgres reference)
+    agora/                   # Deployable team server — built in v0.3, exists today
+    ├── app.py               # create_app(config, store) — the FastAPI seam
+    ├── main.py              # `agora-server` entrypoint
+    ├── admin.py             # `agora-admin` — migrate, keys, export/import
+    ├── auth.py              # API key mint/verify; key → deployment + engineer
+    ├── models.py            # pydantic mirrors of contracts/ (parity-tested)
+    ├── versioning.py        # Schema-version negotiation
+    ├── api/                 # HTTP endpoints (facts, timeline, health)
+    ├── storage/             # AgoraStore interface + postgres/sqlite + migrations
     ├── Dockerfile
     ├── docker-compose.yml
     └── pyproject.toml       # Own package — engineer-side installs don't pull FastAPI/Postgres
@@ -138,9 +147,10 @@ Paths below use the target post-rename structure. Until v1.0, substitute `mempal
 - **HTTP client to agora**: `palace/client.py`
 - **Local audit log**: `palace/audit.py`
 - **Wire format / shared contracts**: `contracts/` — fact payload, API request/response shapes; imported by both palace and agora
-- **Server endpoints**: `agora/api/`
-- **Storage abstraction**: `agora/storage/` — implement new backend by subclassing the abstract storage interface
-- **Deployment config**: `agora/docker-compose.yml` — reference deployment
+- **Server endpoints**: `agora/api/` — one module per resource; add a router in `agora/app.py`
+- **Storage abstraction**: `agora/storage/base.py` — subclass `AgoraStore`, register under the `agora.stores` entry-point group, and prove it by subclassing `agora.storage.testing.AbstractStoreContractSuite`
+- **Server auth**: `agora/auth.py` — the API key is the only source of `deployment_id` / `engineer_id`
+- **Deployment config**: `agora/docker-compose.yml` and [docs/deployment.md](./docs/deployment.md)
 
 For tasks involving the inherited MemPalace plumbing (mining, search, the local palace itself), refer to [FOUNDATION.md](./FOUNDATION.md).
 
@@ -196,3 +206,25 @@ For tasks involving the inherited MemPalace plumbing (mining, search, the local 
 
     # Format check (CI mode)
     ruff format --check .
+
+### Agora server
+
+The server has its own dependency profile — a plain `pip install -e ".[dev]"`
+does not install FastAPI or psycopg, and the agora tests skip themselves when
+it is absent.
+
+    # Install the server alongside the palace
+    pip install -e ".[dev]" ./contracts ./agora
+
+    # Server suite (SQLite-backed; no Docker needed)
+    python -m pytest tests/test_agora_*.py tests/test_client_http.py -v
+
+    # Storage conformance against a real Postgres
+    docker run -d --rm --name pg -e POSTGRES_PASSWORD=pw -p 55432:5432 postgres:16
+    AGORA_TEST_DSN=postgresql://postgres:pw@localhost:55432/postgres \
+        python -m pytest tests/test_agora_storage.py -m postgres -v
+
+    # Run it locally without Docker
+    export AGORA_STORE=sqlite AGORA_SQLITE_PATH=./agora.sqlite3 AGORA_DEPLOYMENT_ID=dev
+    agora-admin migrate && agora-admin issue-key --engineer "$USER"
+    agora-server

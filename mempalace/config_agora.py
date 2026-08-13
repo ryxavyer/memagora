@@ -14,6 +14,7 @@ Reads the ``agora`` section of ``~/.mempalace/config.json``::
         "api_key": "...",
         "classifier_prompt_path": "/path/to/prompt.txt",
         "dry_run": true,
+        "post_timeout": 5.0,
         "llm_provider": "anthropic",
         "llm_model": "claude-haiku-4-5-20251001",
         "llm_endpoint": null,
@@ -27,7 +28,7 @@ Env vars override the file (pre-rename naming; these become
 ``MEMAGORA_*`` at v1.0):
 
 * ``MEMPALACE_AGORA_ENDPOINT`` / ``_API_KEY`` / ``_CLASSIFIER_PROMPT_PATH`` /
-  ``_DRY_RUN`` — server endpoint + dry-run flag
+  ``_DRY_RUN`` / ``_POST_TIMEOUT`` — server endpoint, dry-run flag, POST timeout
 * ``MEMPALACE_AGORA_LLM_PROVIDER`` / ``_LLM_MODEL`` / ``_LLM_ENDPOINT`` /
   ``_LLM_API_KEY`` — classifier LLM configuration
 * ``MEMPALACE_AGORA_MAX_FACTS_PER_TURN`` / ``_TRANSCRIPT_LAST_N`` — safety caps
@@ -59,6 +60,9 @@ DEFAULT_LLM_PROVIDER = "anthropic"
 DEFAULT_LLM_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_MAX_FACTS_PER_TURN = 5
 DEFAULT_TRANSCRIPT_LAST_N = 30
+# Bounds the POST in the synchronous precompact-hook path. One retry means the
+# worst case is roughly twice this before the hook gives up and moves on.
+DEFAULT_POST_TIMEOUT = 5.0
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
@@ -75,6 +79,7 @@ class AgoraConfig:
     api_key: Optional[str] = None
     classifier_prompt_path: Optional[str] = None
     dry_run: bool = True
+    post_timeout: float = DEFAULT_POST_TIMEOUT
     llm_provider: str = DEFAULT_LLM_PROVIDER
     llm_model: str = DEFAULT_LLM_MODEL
     llm_endpoint: Optional[str] = None
@@ -125,6 +130,15 @@ def _coerce_int(raw: Optional[str], *, default: int) -> int:
         return default
 
 
+def _coerce_float(raw: Optional[str], *, default: float) -> float:
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 def load_agora_config(*, config_dir: Optional[Path] = None) -> AgoraConfig:
     """Load AgoraConfig with env-var overrides on top of the JSON file."""
     cfg_dir = Path(config_dir) if config_dir else DEFAULT_CONFIG_DIR
@@ -147,6 +161,10 @@ def load_agora_config(*, config_dir: Optional[Path] = None) -> AgoraConfig:
     dry_run = _coerce_bool(
         os.environ.get("MEMPALACE_AGORA_DRY_RUN"),
         default=bool(file_section.get("dry_run", True)),
+    )
+    post_timeout = _coerce_float(
+        os.environ.get("MEMPALACE_AGORA_POST_TIMEOUT"),
+        default=float(file_section.get("post_timeout", DEFAULT_POST_TIMEOUT)),
     )
 
     llm_provider = (
@@ -178,6 +196,7 @@ def load_agora_config(*, config_dir: Optional[Path] = None) -> AgoraConfig:
         api_key=api_key or None,
         classifier_prompt_path=classifier_prompt_path or None,
         dry_run=dry_run,
+        post_timeout=post_timeout,
         llm_provider=llm_provider,
         llm_model=llm_model,
         llm_endpoint=llm_endpoint or None,

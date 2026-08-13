@@ -1,10 +1,13 @@
 name: Tests
 
+# `master` is MemAgora's development branch (see ROADMAP.md "Branch model");
+# main/develop are inherited from upstream MemPalace and kept so cherry-picked
+# branches still build.
 on:
   push:
-    branches: [main, develop]
+    branches: [master, main, develop]
   pull_request:
-    branches: [main, develop]
+    branches: [master, main, develop]
 
 jobs:
   test-linux:
@@ -42,6 +45,42 @@ jobs:
           cache: 'pip'
       - run: pip install -e ".[dev]"
       - run: python -m pytest tests/ -v --ignore=tests/benchmarks --cov=mempalace --cov-report=term-missing --cov-fail-under=80 --durations=10
+  # The agora server ships its own dependency profile, so the palace jobs above
+  # never install FastAPI or psycopg — their agora tests skip via importorskip.
+  # This job installs it and runs the server suite, including the storage
+  # conformance suite against a real Postgres.
+  agora:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agora_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      AGORA_TEST_DSN: postgresql://postgres:postgres@localhost:5432/agora_test
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+      - run: pip install -e ".[dev]" ./contracts ./agora
+      # `-m "postgres or not postgres"` overrides the default deselection in
+      # pyproject.toml so the conformance suite runs against both stores in one
+      # pass — which is also what makes the coverage number meaningful. The 90%
+      # gate assumes AGORA_TEST_DSN is set: without a live Postgres those tests
+      # skip, postgres.py goes uncovered, and the total lands around 86%.
+      - name: Server suite (SQLite + Postgres)
+        run: python -m pytest tests/test_agora_*.py tests/test_client_http.py -m "postgres or not postgres" -v --cov=agora --cov-report=term-missing --cov-fail-under=90 --durations=10
+
   lint:
     runs-on: ubuntu-latest
     steps:

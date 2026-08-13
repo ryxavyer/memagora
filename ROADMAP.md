@@ -9,7 +9,7 @@
 The repo today contains MemPalace's code with MemAgora documentation layered on top. Concretely:
 
 - The Python package is still named `mempalace` in [pyproject.toml](pyproject.toml). The directory is still `mempalace/`. Both rename to `palace/` and the CLI renames `mempalace` → `memagora` at v1.0 — deliberately deferred to keep upstream cherry-picking cheap until MemAgora is stable. See "v1.0 — the great rename" below.
-- `agora/` and `contracts/` directories described in [AGENTS.md](AGENTS.md) do not exist yet. New MemAgora-specific engineer-side code (classifier, client, audit, config, backend wrapper) lands inside the existing `mempalace/` package until the rename.
+- `contracts/` (v0.1) and `agora/` (v0.3) now exist as described in [AGENTS.md](AGENTS.md), each independently versioned with its own `pyproject.toml`. New MemAgora-specific *engineer-side* code (classifier, client, audit, config, backend wrapper) still lands inside the existing `mempalace/` package until the rename.
 - Inherited MemPalace subsystems range from "actively used" to "strip candidate." The audit and the strip/keep status of each subsystem is in [FOUNDATION.md](FOUNDATION.md).
 
 **Target structure (final state):**
@@ -79,25 +79,52 @@ Goal: the local half of the palace-to-agora pipe works end to end on the enginee
 
 **Verification:** 1554 tests passing (3 skipped, 7 live-marker deselected), `ruff check` and `ruff format --check` clean, all CLI subcommands dispatch correctly. The classifier reads recent transcript turns, calls Claude via the inherited LLM client, parses JSON into FactPayloads, and writes one `entry_type: "classify"` audit entry per fact — with no actual network POST to an agora server until v0.3 ships one.
 
-## v0.3 — Reference agora server
+## v0.3 — Reference agora server (shipped 2026-08-12)
 
 Goal: a deployable team server with one reference storage backend.
 
-- FastAPI server skeleton at `agora/`. Single-binary deployment via Docker; `docker-compose.yml` reference. The server has its own `pyproject.toml` so engineer-side installs don't pull FastAPI/Postgres deps.
-- Storage abstraction (mirroring the spirit of RFC 001 on the read side) with a Postgres reference implementation. Schema is the temporal triple model from [docs/schema.sql](docs/schema.sql) extended with deployment isolation and provenance fields.
-- HTTP API: `POST /facts`, `GET /facts` with subject/predicate/object/time filters, `GET /timeline`, `GET /health`.
-- Auth: per-engineer API keys, scoped to a single deployment. No cross-deployment data leakage by construction.
-- Schema versioning on fact payloads so the server can evolve without breaking older clients.
-- Deployment doc covering single-team self-hosting, including the migration story when the team switches storage backends.
+- ✓ FastAPI server at `agora/`, with its own `pyproject.toml` (engineer-side installs never pull FastAPI or psycopg). `agora/Dockerfile` + `agora/docker-compose.yml` are the reference deployment; build context is the repo root because the image needs `contracts/` too.
+- ✓ Storage abstraction at `agora/storage/base.py` following RFC 001's conventions (kwargs-only signatures, `ClassVar` metadata, frozen result types, lazy I/O). Two implementations ship: `postgres.py` (psycopg3, raw SQL, the reference) and `sqlite.py` (stdlib, local dev + the default CI suite). Selection via `AGORA_STORE`, with an `agora.stores` entry-point group for third-party backends — the server-side analogue of `MEMPALACE_BACKEND`.
+- ✓ Schema at `agora/storage/migrations/postgres/001_init.sql` — the palace's temporal triple extended with `deployment_id` and provenance (`engineer_id`, `source_session_id`, `schema_version`, `recorded_at`). A partial unique index enforces at most one open row per triple, which the palace KG only enforced in application code. Migrations are numbered `.sql` files applied by a runner and recorded in `schema_migrations`; `AGORA_AUTO_MIGRATE` defaults off.
+- ✓ HTTP API: `POST /facts` (partial acceptance — this pins the batch contract `contracts/api.py` left open), `GET /facts` with subject/predicate/object/as-of/current/confidence filters and keyset pagination, `GET /timeline`, `GET /health` (unauthenticated form reveals nothing about the deployment).
+- ✓ Auth: per-engineer API keys (`ak_<id>.<secret>`, SHA-256 of a 128-bit secret stored, never the secret). The key is the only source of `deployment_id` and `engineer_id` — neither is read from a request body, so cross-deployment leakage is structurally impossible rather than a validation rule.
+- ✓ Schema versioning: per-fact version overrides the envelope; same-major any-minor accepted with unknown fields ignored; newer major refused with `schema_version_unsupported`; a `MIGRATIONS` table is the seam for accepting older majors later. `GET /health` advertises what the server accepts.
+- ✓ `agora-admin` CLI: `migrate`, `issue-key`, `revoke-key`, `list-keys`, `stats`, and the `export`/`import` pair that is the storage-swap migration path (ids, ingest timestamps, and per-engineer provenance survive the move).
+- ✓ [docs/deployment.md](docs/deployment.md) covers single-team self-hosting, key issuance, the engineer-side config, backups, upgrades, client/server skew, and changing storage backends.
+- ✓ **Closing the loop** (deferred here from v0.2): `mempalace/client.py` is a real stdlib-`urllib` POST — no new engineer-side dependency, never raises, one retry on transport errors and 5xx. `cmd_classify` posts only when `dry_run` is off and records one `entry_type: "post"` audit entry per batch (endpoint, counts, outcome; never the API key). `mempalace audit diff` compares the local audit log against what the agora holds.
+- ✓ Packaging fix: `contracts/` and `agora/` both declared `packages = ["<name>"]` against a flat layout, which builds an empty wheel. v0.3 is the first milestone that actually installs either one, so both now map the project root onto the import name.
+
+**Verification:** 1754 palace-side tests passing (3 skipped), plus 213 agora tests — the storage conformance suite runs against both SQLite and a live Postgres, at 95% coverage of `agora/`. `ruff check` and `ruff format --check` clean. End to end on a real deployment: `docker compose up` → `agora-admin migrate` → `issue-key` → `mempalace classify` POSTs classified facts → `GET /facts` returns them → `mempalace audit diff` reconciles → a second deployment's key sees none of it.
 
 ## v0.4 — Round trip
 
-Goal: agora facts feed back into the agent experience.
+Goal: agora facts feed back into the agent experience, and the graph tells the truth about time.
 
-- Wake-up integration: team agora facts surface alongside palace context at session start. Time-bounded, scoped by current project/wing.
+**Reading the agora back:**
+
+- Extend `client.get_facts` with the filters the server already implements — subject/predicate/object, `as_of`, `current`, `min_confidence`. v0.3 shipped it with `limit`/`cursor` only, which is enough for `audit diff` and not enough for anything an agent would ask.
 - MCP tools to query the agora directly from inside an agent session: `memagora_facts_about`, `memagora_timeline`, `memagora_decisions_in`. Discoverable via `mempalace_list_agents` pattern; no system-prompt bloat.
-- End-to-end deployment guide with a worked example.
-- First pilot deployment.
+- Wake-up integration: team agora facts surface alongside palace context at session start. Time-bounded, scoped by current project/wing. **Open design question first:** the agora stores subject/predicate/object and the palace organizes by wing/room/drawer. Nothing maps the two today. Decide that mapping before writing the integration — the alternative is a scoping rule that quietly returns the wrong team's context.
+
+**Superseding facts** — the gap v0.3 left, and the one that matters most before a pilot:
+
+The temporal model is fully built server-side (`valid_from` / `valid_to`, as-of queries, one-open-row-per-triple) and nothing uses it. The classifier never sets either bound, and there is no way to close a fact: no PATCH, no DELETE, no equivalent of the palace KG's `invalidate()`. So "we moved off SQS FIFO to Kinesis" writes a *second* open row — a different object is a different triple, so the uniqueness index does not catch it — and both decisions sit there current and contradictory. For a system whose value proposition is institutional memory, last year's decision quietly outliving last month's is the failure mode that matters.
+
+- Classifier emits `valid_to` when it detects a reversal, and `valid_from` when a fact carries a date.
+- A server-side close operation, so a superseding fact ends the one it replaces in the same request rather than racing it.
+- Failing that, or alongside it: surface contradictions at read time, so an agent that finds two open facts on the same `(subject, predicate)` says so rather than picking one.
+
+**Operational debt carried out of v0.3:**
+
+- **No offline retry.** A failed POST is recorded in the audit log (`entry_type: "post"`, `ok: false`) and dropped. `audit diff` surfaces the gap; `mempalace audit resend` is the missing half.
+- **One Postgres connection**, lock-guarded — correct for a single uvicorn worker, thin for a pilot with real concurrency. `psycopg_pool` is a drop-in change confined to `PostgresStore._connection`.
+- **CI has never actually run.** It did not trigger on `master` until v0.3 fixed the workflow triggers, so every v0.1–v0.3 "tests passing" claim was verified locally. The first push to `master` is the real check; treat a red first run as expected rather than alarming.
+- **`docs/architecture.md` and `docs/classifier-tuning.md`** are promised by [AGENTS.md](AGENTS.md) and do not exist. The tuning doc is the load-bearing one: every deployment is expected to iterate on its classifier prompt, and nothing currently tells them how.
+
+**Then:**
+
+- End-to-end deployment guide with a worked example — [docs/deployment.md](docs/deployment.md) covers self-hosting mechanics as of v0.3; what is missing is the narrative walkthrough with a real team's facts in it.
+- First pilot deployment. Gated on the supersede work and on TLS in front of the server (API keys are bearer tokens).
 
 ## v1.0 — General availability + the great rename
 

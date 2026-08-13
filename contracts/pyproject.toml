@@ -29,5 +29,14 @@ dependencies = []
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# The package IS this directory (contracts/facts.py, contracts/api.py), so
+# `packages = ["contracts"]` would look for contracts/contracts/ and build an
+# empty wheel. Map the project root onto the import name instead. Nothing
+# installed this package before v0.3 — the agora server is its first consumer.
 [tool.hatch.build.targets.wheel]
-packages = ["contracts"]
+force-include = {"." = "contracts"}
+exclude = [
+    "pyproject.toml",
+    "**/__pycache__",
+    "**/*.pyc",
+]

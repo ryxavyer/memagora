@@ -13,6 +13,9 @@ mempal.yaml
 # Environment
 .env
 .env.*
+# ...but the agora deployment template is meant to be committed; it holds
+# placeholders, and docker-compose.yml tells operators to copy it to .env.
+!.env.example
 
 # OS
 .DS_Store
@@ -36,3 +39,8 @@ venv/
 
 # ChromaDB local data
 *.sqlite3-journal
+
+# Local agora store (AGORA_STORE=sqlite writes here during development)
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
