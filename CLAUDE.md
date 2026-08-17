@@ -34,7 +34,7 @@ MemAgora is **selectively** built on MemPalace, not faithfully derived from it. 
 - Palace — your private memory. Verbatim, local, sovereign. Your raw stream of consciousness.
 - Agora — the public square. Structured facts extracted from individual palaces and shared across the team. Curated, not raw.
 
-The name comes from the Greek agora — the public square where citizens chose to bring ideas for collective benefit. The word "chose" matters. The classifier respects engineer sovereignty by gating what propagates from palace to agora. Raw verbatim chunks stay private. Only structured, team-relevant facts cross the boundary.
+The name comes from the Greek agora — the public square where citizens chose to bring ideas for collective benefit. The word "chose" matters. The agent itself decides what propagates from palace to agora, calling MemAgora's emission tools to record facts and decisions it judges to be team-relevant. Raw verbatim chunks stay in the palace. Only what the agent explicitly emits crosses the boundary.
 
 ## Design Principles
 
@@ -58,21 +58,24 @@ MemAgora inherits two MemPalace principles in modified form, and adds its own:
 
 ## Architectural Approach
 
-MemAgora is designed as a **deployable template** — the same codebase, deployed independently per team. Three layers, all swappable:
+MemAgora is designed as a **deployable template** — the same codebase, deployed independently per team. Two deployment units connected by agent-driven tool calls:
 
-    Engineer's local palace (MemPalace plumbing, MemAgora-curated)
+    Agent (Claude Code or any LLM-based coding agent)
+           │  reads palace context via MCP tools each session
+           │  emits facts and decisions via MCP tools during the session
+           ▼
+    MemAgora MCP tools ───── palace: verbatim read/write, local only
+                             agora:  memagora_record_fact,
+                                     memagora_record_decision,
+                                     memagora_facts_about,
+                                     memagora_decisions_about,
+                                     memagora_why
            │
            ▼
-    MemAgora Classifier ──── classifier prompt configurable per deployment
-           │
-           ▼
-    MemAgora Backend ─────── HTTP client posting to a configured endpoint
-           │
-           ▼
-    Team Agora Server ────── pluggable storage layer (Postgres default,
-                             deployable swap for other backends)
+    Team Agora Server ─────── pluggable storage layer (Postgres default,
+                              deployable swap for other backends)
 
-The integration with MemPalace happens through MemPalace's pluggable backend interface (`mempalace/backends/base.py`). MemAgora ships a backend implementation that wraps the default ChromaDB backend, performs the normal local write, and additionally invokes the classifier on team-relevant content. Classified facts are POSTed to the configured agora server.
+**MemAgora is a tool that agents call, not a system that manages its own intelligence.** The agent calling the tools is the intelligence. During a session, the agent reads from its local palace for context and emits team-relevant facts and decisions to the agora via MCP tools — no separate LLM pipeline runs inside MemAgora itself. The palace integration continues through MemPalace's pluggable backend interface (`mempalace/backends/base.py`); the backend wrapper handles local writes and audit logging. Agora population is the agent's responsibility, not the framework's.
 
 The agora server itself is a separate deployable unit. Each team stands up their own instance. The server's storage layer is also abstracted — Postgres is the default and reference implementation, but a team should be able to swap in MySQL, a different KG store, or whatever fits their existing infrastructure.
 
@@ -85,6 +88,7 @@ The core invariant: **regardless of deployment configuration, the engineer's loc
 - **Server framework — FastAPI** (v0.3). Python consistency with the rest of the codebase won over Go's single-binary story; the Docker image is the deployment unit either way. `agora/app.py` exposes `create_app(config=..., store=...)`, so the framework is confined to the HTTP edge.
 - **Database — Postgres as the reference** (v0.3), behind the `AgoraStore` interface in `agora/storage/base.py`. SQLite ships alongside it, which is what keeps the abstraction honest: two real implementations pass the same conformance suite. Nothing above the storage layer knows which one is running.
 - **Hook vs backend integration — the hook path won** (v0.2/v0.3). Classification runs from `mempalace classify` invoked by the save and precompact hooks, not from inside the backend wrapper. `backend_agora.py` still audits drawer writes, but the classifier never plugs into `_maybe_audit` as v0.1 anticipated: the hook has the transcript, and the backend only has chunks.
+- **No built-in LLM pipeline — agent-driven emission** (v0.4). MemAgora does not manage its own LLM calls. The agent using the tools is the intelligence; it decides what is team-relevant and emits it via `memagora_record_fact` and `memagora_record_decision` MCP tools during the session. A separate classifier LLM call would redundantly re-process content the agent already understood and would require MemAgora to manage API keys and a second model dependency. The hook-based `mempalace classify` path (v0.2) remains as a fallback for sessions where the agent did not call emission tools, but agent-driven emission is the primary and intended path.
 
 **Still open:**
 
@@ -100,7 +104,7 @@ Two top-level code directories matching the two deployment units, plus a neutral
     ├── (audited, pruned MemPalace foundation per FOUNDATION.md —
     │    mcp_server.py, miner.py, searcher.py, backends/, …)
     ├── backend.py           # Wraps palace.backends.chroma with classifier integration
-    ├── classifier.py        # Local-vs-team classification
+    ├── classifier.py        # Fallback hook-based classifier (agent-driven emission via MCP tools is primary)
     ├── client.py            # HTTP client posting to agora server
     ├── audit.py             # Local append-only audit log of team writes
     ├── config.py            # Endpoint, API key, classifier prompt (merged with inherited config at rename)
@@ -129,7 +133,7 @@ Two top-level code directories matching the two deployment units, plus a neutral
     docs/
     │   ├── architecture.md
     │   ├── deployment.md
-    │   └── classifier-tuning.md
+    │   └── agent-integration.md   # How agents use the MCP emission and query tools
     tests/
 
 **Why this layout:** every top-level directory maps to a deployable unit (`palace` ships to engineers, `agora` ships to teams) or a versioning boundary (`contracts` versions independently for rolling-deploy compatibility). "memagora" is the project / repo / CLI name — not a code directory. The inherited-vs-original boundary that earlier drafts captured as a directory split (`mempalace/` + `memagora/`) is captured instead by per-file provenance headers added during the v1.0 rename. That boundary is historical, not architectural.
@@ -142,7 +146,8 @@ Two top-level code directories matching the two deployment units, plus a neutral
 
 Paths below use the target post-rename structure. Until v1.0, substitute `mempalace/` for `palace/`.
 
-- **Classifier logic**: `palace/classifier.py` — prompt and post-processing
+- **Agora emission MCP tools**: `palace/mcp_server.py` — `memagora_record_fact`, `memagora_record_decision`, `memagora_facts_about`, `memagora_decisions_about`, `memagora_why`
+- **Classifier (fallback)**: `palace/classifier.py` — hook-invoked, for agents that do not call emission tools directly
 - **Backend integration**: `palace/backend.py` — implements `palace/backends/base.py`, wraps `palace/backends/chroma.py`
 - **HTTP client to agora**: `palace/client.py`
 - **Local audit log**: `palace/audit.py`
@@ -165,8 +170,8 @@ For tasks involving the inherited MemPalace plumbing (mining, search, the local 
       # Selectively cherry-pick or merge into a feature branch off master, then PR into master
 
   We do not auto-track upstream. Every advance is gated on a contract review.
-- **Classifier quality** — The classifier prompt is the core novel piece of MemAgora and is inherently context-dependent. A poorly-tuned classifier either propagates noise or starves the agora. Each deployment will need to iterate on its prompt against real usage.
-- **Privacy expectations** — Engineers need confidence that the local-vs-team boundary is real. A single incident of raw content reaching the agora would damage trust. The classifier's default behavior must be conservative — when uncertain, content stays local.
+- **Agent emission discipline** — Agora quality depends on the agent actually calling the emission tools. An agent that never calls `memagora_record_decision` produces no rationale in the agora regardless of session depth. Each deployment's CLAUDE.md (or equivalent agent instructions) should explicitly encourage emission at decision and design points.
+- **Privacy expectations** — Engineers need confidence that the local-vs-team boundary is real. A single incident of raw content reaching the agora would damage trust. Agents must only emit structured facts and decisions via the emission tools — never raw conversation content.
 - **Inherited brittleness** — Several known bugs and design issues exist in the MemPalace code MemAgora inherits. Most do not affect MemAgora directly because the affected subsystems aren't on MemAgora's path. See [FOUNDATION.md](./FOUNDATION.md) for the audit and the current strip/keep status of each subsystem.
 
 ## Working Notes for Coding Agents
@@ -175,7 +180,7 @@ For tasks involving the inherited MemPalace plumbing (mining, search, the local 
 - MemAgora-specific additions live in `palace/` (engineer-side), `agora/` (server), and `contracts/` (shared wire format). Pre-rename, engineer-side additions land inside `mempalace/` directly — see [ROADMAP.md](./ROADMAP.md) for the rename mechanics.
 - When modifying inherited MemPalace files, check [FOUNDATION.md](./FOUNDATION.md) first to understand whether the file is on MemAgora's path or vestigial. Modifications to vestigial code are usually unnecessary.
 - Bug fixes that improve genuinely-used MemPalace plumbing should be considered for upstream contribution back to MemPalace via the `upstream` git remote. Bug fixes to subsystems MemAgora has marked for removal are not worth contributing — strip them locally instead.
-- MemAgora's novel logic — classifier prompts, server endpoints, storage abstractions — stays in this repository and is not contributed upstream.
+- MemAgora's novel logic — MCP emission tools, server endpoints, storage abstractions, contracts — stays in this repository and is not contributed upstream.
 
 ## Conventions
 

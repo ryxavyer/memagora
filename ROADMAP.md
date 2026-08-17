@@ -98,19 +98,28 @@ Goal: a deployable team server with one reference storage backend.
 
 ## v0.4 — Round trip
 
-Goal: agora facts feed back into the agent experience, and the graph tells the truth about time.
+Goal: agents drive agora population directly, agora facts feed back into the agent experience, and the graph tells the truth about time.
+
+**Agent-driven emission (primary path):**
+
+MemAgora does not manage its own LLM pipeline. The agent calling the tools is the intelligence. Agora population happens through the agent explicitly calling emission MCP tools during a session — no separate LLM call re-processes content the agent already understood.
+
+- New MCP emission tools: `memagora_record_fact`, `memagora_record_decision`. These are the primary agora population path.
+- `memagora_record_decision` accepts the `DecisionRecord` shape — title, chosen approach, rationale, alternatives rejected, constraints, open questions — and links to the atomic facts it produced via a shared `decision_id`. This is the shape that answers "why was this decision made" when an agent queries the agora in a future session.
+- `DecisionRecord` added to `contracts/facts.py` alongside `FactPayload`; `FactPayload` gets an optional `decision_id`. New `POST /ingest` endpoint accepts a mixed batch; existing `POST /facts` preserved for backwards compatibility.
+- The hook-based `mempalace classify` path (v0.2) is retained as a fallback for agents that do not call emission tools, but is no longer the primary path.
 
 **Reading the agora back:**
 
 - Extend `client.get_facts` with the filters the server already implements — subject/predicate/object, `as_of`, `current`, `min_confidence`. v0.3 shipped it with `limit`/`cursor` only, which is enough for `audit diff` and not enough for anything an agent would ask.
-- MCP tools to query the agora directly from inside an agent session: `memagora_facts_about`, `memagora_timeline`, `memagora_decisions_in`. Discoverable via `mempalace_list_agents` pattern; no system-prompt bloat.
+- MCP query tools: `memagora_facts_about`, `memagora_timeline`, `memagora_decisions_about`, `memagora_why(subject, predicate)`. Discoverable via `mempalace_list_agents` pattern; no system-prompt bloat.
 - Wake-up integration: team agora facts surface alongside palace context at session start. Time-bounded, scoped by current project/wing. **Open design question first:** the agora stores subject/predicate/object and the palace organizes by wing/room/drawer. Nothing maps the two today. Decide that mapping before writing the integration — the alternative is a scoping rule that quietly returns the wrong team's context.
 
 **Superseding facts** — the gap v0.3 left, and the one that matters most before a pilot:
 
-The temporal model is fully built server-side (`valid_from` / `valid_to`, as-of queries, one-open-row-per-triple) and nothing uses it. The classifier never sets either bound, and there is no way to close a fact: no PATCH, no DELETE, no equivalent of the palace KG's `invalidate()`. So "we moved off SQS FIFO to Kinesis" writes a *second* open row — a different object is a different triple, so the uniqueness index does not catch it — and both decisions sit there current and contradictory. For a system whose value proposition is institutional memory, last year's decision quietly outliving last month's is the failure mode that matters.
+The temporal model is fully built server-side (`valid_from` / `valid_to`, as-of queries, one-open-row-per-triple) and nothing uses it. There is no way to close a fact: no PATCH, no DELETE, no equivalent of the palace KG's `invalidate()`. So "we moved off SQS FIFO to Kinesis" writes a *second* open row — a different object is a different triple, so the uniqueness index does not catch it — and both decisions sit there current and contradictory. For a system whose value proposition is institutional memory, last year's decision quietly outliving last month's is the failure mode that matters.
 
-- Classifier emits `valid_to` when it detects a reversal, and `valid_from` when a fact carries a date.
+- Agents emit `valid_to` when recording a reversal via `memagora_record_fact`, and `valid_from` when a fact carries a known date.
 - A server-side close operation, so a superseding fact ends the one it replaces in the same request rather than racing it.
 - Failing that, or alongside it: surface contradictions at read time, so an agent that finds two open facts on the same `(subject, predicate)` says so rather than picking one.
 
@@ -119,7 +128,7 @@ The temporal model is fully built server-side (`valid_from` / `valid_to`, as-of 
 - **No offline retry.** A failed POST is recorded in the audit log (`entry_type: "post"`, `ok: false`) and dropped. `audit diff` surfaces the gap; `mempalace audit resend` is the missing half.
 - **One Postgres connection**, lock-guarded — correct for a single uvicorn worker, thin for a pilot with real concurrency. `psycopg_pool` is a drop-in change confined to `PostgresStore._connection`.
 - **CI has never actually run.** It did not trigger on `master` until v0.3 fixed the workflow triggers, so every v0.1–v0.3 "tests passing" claim was verified locally. The first push to `master` is the real check; treat a red first run as expected rather than alarming.
-- **`docs/architecture.md` and `docs/classifier-tuning.md`** are promised by [AGENTS.md](AGENTS.md) and do not exist. The tuning doc is the load-bearing one: every deployment is expected to iterate on its classifier prompt, and nothing currently tells them how.
+- **`docs/architecture.md` and `docs/agent-integration.md`** are promised by [AGENTS.md](AGENTS.md) and do not exist. The agent integration doc is the load-bearing one: it needs to explain how agents should call the emission tools, what belongs in a `DecisionRecord`, and how to configure a deployment's CLAUDE.md to encourage emission at decision points.
 
 **Then:**
 
@@ -132,10 +141,10 @@ Goal: production-ready for self-hosted teams, and a final scrub of `mempalace` f
 
 **Product:**
 
-- Hardened classifier with deployment-tunable prompts and a documented evaluation methodology each team can run against their own corpus.
+- Hardened MCP emission and query tools with documented guidance for each deployment's agent instructions.
 - At least one alternative agora storage backend implementation (proves the abstraction).
-- Stability guarantees on the classifier output schema and the agora HTTP contract.
-- Documentation: architecture, deployment, classifier-tuning, operator runbook.
+- Stability guarantees on the contracts schema and the agora HTTP contract.
+- Documentation: architecture, agent-integration, deployment, operator runbook.
 
 **The great rename** (one coordinated PR, after the product is stable):
 
@@ -156,7 +165,7 @@ The rename is deliberately last. Earlier, every upstream MemPalace fix is one `g
 ## What we are deliberately not doing
 
 - **No multi-device sync for the palace.** That problem is solved by the agora server, not by file replication.
-- **No raw-content propagation across engineers.** The classifier boundary is the privacy guarantee. If a fact's classification is uncertain, it stays in the palace.
+- **No raw-content propagation across engineers.** The emission tools are the privacy boundary. Agents emit structured facts and decisions — never raw conversation chunks. If content is uncertain, it stays in the palace.
 - **No silent network calls.** A MemAgora install with no configured endpoint behaves identically to MemPalace alone. The only network call is the explicit POST to the engineer's configured agora server.
 - **No benchmark claims about retrieval accuracy.** MemAgora's value proposition is institutional memory across engineers, not LongMemEval scores. We inherit MemPalace's retrieval as-is and do not headline its benchmarks as MemAgora's.
 
