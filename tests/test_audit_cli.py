@@ -393,3 +393,140 @@ def test_format_entry_failed_post_is_visible():
     )
     assert "FAILED" in line
     assert "cannot reach host" in line
+
+
+# ── audit resend ────────────────────────────────────────────────────────
+
+
+def _sent_facts(monkeypatch):
+    """Capture post_facts calls; report everything accepted."""
+    from contracts import PostFactsResponse
+
+    calls = []
+
+    def fake_post(facts, **kwargs):
+        calls.append(list(facts))
+        return PostFactsResponse(accepted=len(facts), rejected=0, message=None)
+
+    monkeypatch.setattr("mempalace.client.post_facts", fake_post)
+    return calls
+
+
+def test_resend_without_an_endpoint_is_a_noop(audit_log, monkeypatch, capsys):
+    monkeypatch.delenv("MEMPALACE_AGORA_ENDPOINT", raising=False)
+    assert run_audit(action="resend") == 0
+    assert "nothing to resend" in capsys.readouterr().out
+
+
+def test_resend_refuses_in_dry_run_mode(audit_log, monkeypatch, capsys):
+    monkeypatch.setenv("MEMPALACE_AGORA_ENDPOINT", "https://agora.test.example")
+    monkeypatch.setenv("MEMPALACE_AGORA_DRY_RUN", "1")
+    _seed(audit_log, [_classify_entry("project")])
+    _serve(monkeypatch, [])
+
+    assert run_audit(action="resend") == 0
+    out = capsys.readouterr().out
+    assert "Dry-run mode is on" in out
+
+
+def test_resend_sends_only_what_the_agora_is_missing(audit_log, agora_config, monkeypatch, capsys):
+    _seed(
+        audit_log,
+        [_classify_entry("project"), _classify_entry("api", "owned_by", "platform")],
+    )
+    _serve(monkeypatch, [("project", "uses", "PostgreSQL")])
+    sent = _sent_facts(monkeypatch)
+
+    assert run_audit(action="resend") == 0
+
+    assert len(sent) == 1
+    assert [(f.subject, f.predicate, f.object) for f in sent[0]] == [
+        ("api", "owned_by", "platform")
+    ]
+    assert "1 fact(s) recorded locally are missing" in capsys.readouterr().out
+
+
+def test_resend_is_safe_to_run_twice(audit_log, agora_config, monkeypatch, capsys):
+    """The second run finds nothing, because the comparison is against the agora."""
+    _seed(audit_log, [_classify_entry("project")])
+    _serve(monkeypatch, [("project", "uses", "PostgreSQL")])
+    sent = _sent_facts(monkeypatch)
+
+    assert run_audit(action="resend") == 0
+    assert sent == []
+    assert "Nothing to resend" in capsys.readouterr().out
+
+
+def test_resend_includes_agent_emitted_facts(audit_log, agora_config, monkeypatch, capsys):
+    _seed(
+        audit_log,
+        [
+            {
+                "entry_type": "emit",
+                "op": "record_fact",
+                "session_id": "s-1",
+                "fact": {
+                    "subject": "notifications",
+                    "predicate": "uses",
+                    "object": "SQS FIFO",
+                    "confidence": 0.9,
+                    "decision_id": "dec_1",
+                },
+                "dry_run": False,
+            }
+        ],
+    )
+    _serve(monkeypatch, [])
+    sent = _sent_facts(monkeypatch)
+
+    assert run_audit(action="resend") == 0
+    fact = sent[0][0]
+    assert fact.subject == "notifications"
+    assert fact.decision_id == "dec_1"  # the link survives the resend
+    assert fact.confidence == 0.9
+
+
+def test_resend_dry_run_lists_without_sending(audit_log, agora_config, monkeypatch, capsys):
+    _seed(audit_log, [_classify_entry("project")])
+    _serve(monkeypatch, [])
+    sent = _sent_facts(monkeypatch)
+
+    assert run_audit(action="resend", dry_run=True) == 0
+    assert sent == []
+    assert "nothing sent" in capsys.readouterr().out
+
+
+def test_resend_records_its_own_outcome_in_the_audit_log(audit_log, agora_config, monkeypatch):
+    _seed(audit_log, [_classify_entry("project")])
+    _serve(monkeypatch, [])
+    _sent_facts(monkeypatch)
+
+    run_audit(action="resend")
+
+    last = audit_module.read_audit_entries(audit_log)[-1]
+    assert last["entry_type"] == "post"
+    assert last["op"] == "resent"
+    assert last["ok"] is True
+
+
+def test_resend_exit_code_2_when_unreachable(audit_log, agora_config, monkeypatch, capsys):
+    _seed(audit_log, [_classify_entry("project")])
+    monkeypatch.setattr("mempalace.client.get_facts", lambda **kw: None)
+    assert run_audit(action="resend") == 2
+
+
+def test_resend_exit_code_1_when_everything_is_rejected(audit_log, agora_config, monkeypatch):
+    from contracts import PostFactsResponse
+
+    _seed(audit_log, [_classify_entry("project")])
+    _serve(monkeypatch, [])
+    monkeypatch.setattr(
+        "mempalace.client.post_facts",
+        lambda facts, **kw: PostFactsResponse(accepted=0, rejected=len(facts), message="nope"),
+    )
+    assert run_audit(action="resend") == 1
+
+
+def test_unknown_action_mentions_resend(capsys):
+    run_audit(action="bogus")
+    assert "resend" in capsys.readouterr().err

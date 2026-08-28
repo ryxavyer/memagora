@@ -12,6 +12,7 @@ from psycopg, so these tests run everywhere the palace tests do.
 
 import os
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -40,6 +41,12 @@ from agora.storage.base import (
 )
 from agora.storage.sqlite import SQLiteStore
 from agora.storage.testing import AbstractStoreContractSuite, make_fact
+
+
+def _sqlite_migration_versions() -> list:
+    """Versions shipped under migrations/sqlite, so adding one does not
+    require editing these tests."""
+    return [version for version, _ in load_migrations(Path("agora/storage/migrations/sqlite"))]
 
 
 class TestSQLiteStore(AbstractStoreContractSuite):
@@ -107,7 +114,7 @@ def test_build_store_from_config(tmp_path):
     store = build_store(config)
     try:
         assert isinstance(store, AgoraStore)
-        assert store.migrate() == ["001"]
+        assert store.migrate() == _sqlite_migration_versions()
     finally:
         store.close()
 
@@ -219,8 +226,6 @@ def test_split_statements_ignores_semicolons_in_comments():
 
 
 def test_load_migrations_is_ordered_and_versioned():
-    from pathlib import Path
-
     migrations = load_migrations(Path("agora/storage/migrations/sqlite"))
     assert [version for version, _ in migrations] == sorted(v for v, _ in migrations)
     assert migrations[0][0] == "001"
@@ -239,7 +244,8 @@ def test_load_migrations_rejects_an_empty_directory(tmp_path):
 def test_migrate_reports_versions_applied(tmp_path):
     store = SQLiteStore(path=str(tmp_path / "fresh.sqlite3"))
     try:
-        assert store.migrate() == ["001"]
+        # Every migration on disk, in order, then nothing on a second run.
+        assert store.migrate() == _sqlite_migration_versions()
         assert store.migrate() == []
     finally:
         store.close()
@@ -249,3 +255,44 @@ def test_store_does_no_io_before_first_use(tmp_path):
     path = tmp_path / "lazy.sqlite3"
     SQLiteStore(path=str(path))
     assert not path.exists()
+
+
+# ── Connection pooling ──────────────────────────────────────────────────
+
+
+@pytest.mark.postgres
+@pytest.mark.skipif(
+    not os.environ.get("AGORA_TEST_DSN"),
+    reason="AGORA_TEST_DSN not set; see docs/deployment.md",
+)
+class TestPooledPostgresStore(AbstractStoreContractSuite):
+    """The same contract again, this time through psycopg_pool.
+
+    Pooling is a deployment knob, not a behavior change — if it altered any
+    observable semantics, this suite would say so.
+    """
+
+    @pytest.fixture
+    def store(self):
+        pytest.importorskip("psycopg_pool")
+        from agora.storage.postgres import PostgresStore
+
+        store = PostgresStore(dsn=os.environ["AGORA_TEST_DSN"], pool_size=4)
+        store.migrate()
+        store.truncate_all()
+        yield store
+        store.close()
+
+
+def test_pooling_is_off_by_default():
+    assert load_config(env={}).pool_size == 0
+
+
+def test_pool_size_falls_back_when_the_package_is_missing(monkeypatch, capsys):
+    """A pool that cannot be built degrades to one connection, loudly."""
+    from agora.storage.postgres import PostgresStore
+
+    store = PostgresStore(dsn="postgresql://unused", pool_size=4)
+    monkeypatch.setitem(__import__("sys").modules, "psycopg_pool", None)
+    assert store._get_pool() is None
+    assert store._pool_size == 0  # not retried on every request

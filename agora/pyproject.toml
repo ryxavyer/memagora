@@ -1,7 +1,7 @@
 [project]
 name = "memagora-agora"
-version = "0.3.0"
-description = "MemAgora team server — stores classified facts from engineers' palaces as a shared temporal knowledge graph."
+version = "0.4.0"
+description = "MemAgora team server — stores the facts and decisions engineers' agents emit as a shared temporal knowledge graph."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -39,7 +39,11 @@ agora-admin = "agora.admin:main"
 [project.entry-points."agora.stores"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "pytest-cov>=4.0", "httpx>=0.27"]
+# Connection pooling. Not required: without it the store uses one lock-guarded
+# connection, which is correct but serializes overlapping requests. Install and
+# set AGORA_POOL_SIZE when a team outgrows that.
+pool = ["psycopg_pool>=3.2"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "httpx>=0.27", "psycopg_pool>=3.2"]
 
 [build-system]
 requires = ["hatchling"]

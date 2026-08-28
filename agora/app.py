@@ -20,10 +20,16 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
 from . import __version__
-from .api import facts_router, health_router, timeline_router
+from .api import (
+    decisions_router,
+    facts_router,
+    health_router,
+    ingest_router,
+    timeline_router,
+)
 from .config import AgoraServerConfig, load_config
 from .storage import AgoraStore, build_store
-from .storage.base import AgoraStoreError
+from .storage.base import AgoraStoreError, MigrationError
 from .versioning import SERVER_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
@@ -54,9 +60,23 @@ def create_app(
         applied = store.migrate()
         if applied:
             logger.info("applied migrations: %s", ", ".join(applied))
+    else:
+        # Refuse to serve against a schema this build does not match. Running
+        # new code on an old schema fails per-request, deep in a driver error,
+        # long after the operator has moved on; failing here says exactly what
+        # to do while they are still watching the deploy.
+        pending = store.pending_migrations()
+        if pending:
+            raise MigrationError(
+                "database schema is behind this server: migration(s) "
+                f"{', '.join(pending)} not applied. Run `agora-admin migrate` "
+                "before starting the server (or set AGORA_AUTO_MIGRATE=1)."
+            )
 
     app.include_router(health_router)
     app.include_router(facts_router)
+    app.include_router(ingest_router)
+    app.include_router(decisions_router)
     app.include_router(timeline_router)
 
     @app.middleware("http")

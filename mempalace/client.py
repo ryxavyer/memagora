@@ -19,12 +19,21 @@ in the audit log.
 
 import json
 import logging
+from dataclasses import asdict, is_dataclass
 from typing import Any, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from contracts import SCHEMA_VERSION, FactPayload, GetFactsResponse, PostFactsResponse
+from contracts import (
+    SCHEMA_VERSION,
+    DecisionRecord,
+    FactPayload,
+    GetDecisionsResponse,
+    GetFactsResponse,
+    IngestResponse,
+    PostFactsResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,25 +94,111 @@ def post_facts(
     )
 
 
+def post_ingest(
+    *,
+    endpoint: str,
+    facts: Optional[list] = None,
+    decisions: Optional[list] = None,
+    closes: Optional[list] = None,
+    api_key: Optional[str] = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> IngestResponse:
+    """POST a mixed batch of decisions and facts to ``/ingest``.
+
+    The path agent-driven emission uses. Decisions and facts travel together so
+    the server stores the decision first and a fact's ``decision_id`` never
+    points at something that is not there yet.
+
+    Never raises, exactly as :func:`post_facts` does not — an emission tool
+    that threw would surface as a tool error inside the agent's session.
+    """
+    facts = list(facts or [])
+    decisions = list(decisions or [])
+    closes = list(closes or [])
+    if not facts and not decisions and not closes:
+        return IngestResponse(
+            facts_accepted=0, facts_rejected=0, decisions_accepted=0, decisions_rejected=0
+        )
+
+    error = _validate_endpoint(endpoint)
+    if error:
+        return IngestResponse(
+            facts_accepted=0,
+            facts_rejected=len(facts),
+            decisions_accepted=0,
+            decisions_rejected=len(decisions),
+            message=error,
+        )
+
+    body = {
+        "facts": [_as_dict(fact) for fact in facts],
+        "decisions": [_as_dict(decision) for decision in decisions],
+        "closes": [_as_dict(close) for close in closes],
+        "schema_version": SCHEMA_VERSION,
+    }
+
+    payload, failure = _request(
+        "POST", _url(endpoint, "/ingest"), body=body, api_key=api_key, timeout=timeout
+    )
+    if failure is not None:
+        logger.warning("agora ingest failed: %s", failure)
+        return IngestResponse(
+            facts_accepted=0,
+            facts_rejected=len(facts),
+            decisions_accepted=0,
+            decisions_rejected=len(decisions),
+            message=failure,
+        )
+
+    return IngestResponse(
+        facts_accepted=int(payload.get("facts_accepted", 0)),
+        facts_rejected=int(payload.get("facts_rejected", 0)),
+        decisions_accepted=int(payload.get("decisions_accepted", 0)),
+        decisions_rejected=int(payload.get("decisions_rejected", 0)),
+        facts_closed=int(payload.get("facts_closed", 0)),
+        message=payload.get("message"),
+    )
+
+
 def get_facts(
     *,
     endpoint: str,
     api_key: Optional[str] = None,
+    subject: Optional[str] = None,
+    predicate: Optional[str] = None,
+    object: Optional[str] = None,
+    as_of: Optional[str] = None,
+    current: bool = False,
+    min_confidence: Optional[float] = None,
+    decision_id: Optional[str] = None,
     limit: int = 100,
     cursor: Optional[str] = None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> Optional[GetFactsResponse]:
     """Fetch one page of facts. Returns ``None`` when the call fails.
 
-    Used by ``mempalace audit diff`` to compare the local audit log against
-    what the agora actually holds.
+    Every filter the server implements is exposed here. ``audit diff`` uses
+    none of them; the MCP query tools use all of them, which is why v0.3's
+    limit-and-cursor-only signature was not enough.
     """
     if _validate_endpoint(endpoint):
         return None
 
     params = {"limit": limit}
-    if cursor:
-        params["cursor"] = cursor
+    for name, value in (
+        ("subject", subject),
+        ("predicate", predicate),
+        ("object", object),
+        ("as_of", as_of),
+        ("decision_id", decision_id),
+        ("cursor", cursor),
+    ):
+        if value:
+            params[name] = value
+    if current:
+        params["current"] = "true"
+    if min_confidence is not None:
+        params["min_confidence"] = min_confidence
 
     payload, failure = _request(
         "GET",
@@ -112,7 +207,7 @@ def get_facts(
         timeout=timeout,
     )
     if failure is not None:
-        logger.warning("agora GET failed: %s", failure)
+        logger.warning("agora GET /facts failed: %s", failure)
         return None
 
     facts = []
@@ -121,6 +216,82 @@ def get_facts(
         if fact is not None:
             facts.append(fact)
     return GetFactsResponse(facts=facts, next_cursor=payload.get("next_cursor"))
+
+
+def get_timeline(
+    *,
+    endpoint: str,
+    api_key: Optional[str] = None,
+    subject: Optional[str] = None,
+    limit: int = 100,
+    cursor: Optional[str] = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> Optional[GetFactsResponse]:
+    """Facts ordered by when they started holding. ``None`` on failure."""
+    if _validate_endpoint(endpoint):
+        return None
+
+    params = {"limit": limit}
+    if subject:
+        params["subject"] = subject
+    if cursor:
+        params["cursor"] = cursor
+
+    payload, failure = _request(
+        "GET",
+        _url(endpoint, "/timeline") + "?" + urlencode(params),
+        api_key=api_key,
+        timeout=timeout,
+    )
+    if failure is not None:
+        logger.warning("agora GET /timeline failed: %s", failure)
+        return None
+
+    facts = [f for f in (_fact_from_dict(raw) for raw in payload.get("facts", [])) if f]
+    return GetFactsResponse(facts=facts, next_cursor=payload.get("next_cursor"))
+
+
+def get_decisions(
+    *,
+    endpoint: str,
+    api_key: Optional[str] = None,
+    ids: Optional[list] = None,
+    limit: int = 100,
+    cursor: Optional[str] = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> Optional[GetDecisionsResponse]:
+    """Fetch decisions, optionally restricted to a set of ids.
+
+    An empty ``ids`` list means "none of them" — never "all of them" — matching
+    the rule the server and the storage layer both enforce.
+    """
+    if _validate_endpoint(endpoint):
+        return None
+    if ids is not None and not ids:
+        return GetDecisionsResponse(decisions=[], next_cursor=None)
+
+    params = {"limit": limit}
+    if ids:
+        params["ids"] = ",".join(ids)
+    if cursor:
+        params["cursor"] = cursor
+
+    payload, failure = _request(
+        "GET",
+        _url(endpoint, "/decisions") + "?" + urlencode(params),
+        api_key=api_key,
+        timeout=timeout,
+    )
+    if failure is not None:
+        logger.warning("agora GET /decisions failed: %s", failure)
+        return None
+
+    decisions = []
+    for raw in payload.get("decisions", []):
+        decision = _decision_from_dict(raw)
+        if decision is not None:
+            decisions.append(decision)
+    return GetDecisionsResponse(decisions=decisions, next_cursor=payload.get("next_cursor"))
 
 
 # ── Internals ───────────────────────────────────────────────────────────
@@ -140,18 +311,14 @@ def _url(endpoint: str, path: str) -> str:
 
 
 def _as_dict(fact) -> dict:
-    """Serialize a fact without importing dataclasses for the common case."""
-    if isinstance(fact, FactPayload):
-        return {
-            "subject": fact.subject,
-            "predicate": fact.predicate,
-            "object": fact.object,
-            "valid_from": fact.valid_from,
-            "valid_to": fact.valid_to,
-            "confidence": fact.confidence,
-            "source_session_id": fact.source_session_id,
-            "schema_version": fact.schema_version,
-        }
+    """Serialize a fact for the wire.
+
+    ``asdict`` rather than a hand-written field list: the list version silently
+    dropped ``decision_id`` when the contract gained it in 0.2.0, and would do
+    the same to the next field.
+    """
+    if is_dataclass(fact):
+        return asdict(fact)
     return dict(fact)
 
 
@@ -171,10 +338,35 @@ def _fact_from_dict(raw: dict) -> Optional[FactPayload]:
             valid_to=raw.get("valid_to"),
             confidence=float(raw.get("confidence", 1.0)),
             source_session_id=raw.get("source_session_id"),
+            decision_id=raw.get("decision_id"),
             schema_version=raw.get("schema_version", SCHEMA_VERSION),
         )
     except (KeyError, TypeError, ValueError):
         logger.warning("skipping malformed fact in agora response")
+        return None
+
+
+def _decision_from_dict(raw: dict) -> Optional[DecisionRecord]:
+    """Build a ``DecisionRecord`` from a server response row.
+
+    Additive server fields (``engineer_id``, ``recorded_at``) are dropped, as
+    on the fact path.
+    """
+    try:
+        return DecisionRecord(
+            decision_id=raw["decision_id"],
+            title=raw["title"],
+            chosen=raw["chosen"],
+            rationale=raw["rationale"],
+            alternatives_rejected=list(raw.get("alternatives_rejected") or []),
+            constraints=list(raw.get("constraints") or []),
+            open_questions=list(raw.get("open_questions") or []),
+            decided_on=raw.get("decided_on"),
+            source_session_id=raw.get("source_session_id"),
+            schema_version=raw.get("schema_version", SCHEMA_VERSION),
+        )
+    except (KeyError, TypeError, ValueError):
+        logger.warning("skipping malformed decision in agora response")
         return None
 
 

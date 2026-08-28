@@ -14,7 +14,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 from agora.app import SCHEMA_VERSION_HEADER, create_app  # noqa: E402
 from agora.auth import generate_key  # noqa: E402
 from agora.config import AgoraServerConfig  # noqa: E402
+from agora.storage.base import MigrationError  # noqa: E402
 from agora.storage.sqlite import SQLiteStore  # noqa: E402
+from contracts import SCHEMA_VERSION  # noqa: E402
 
 DEPLOYMENT = "team-alpha"
 OTHER_DEPLOYMENT = "team-beta"
@@ -53,7 +55,7 @@ def auth(key):
     return {"Authorization": f"Bearer {key}"}
 
 
-def payload(*facts, schema_version="0.1.0"):
+def payload(*facts, schema_version=SCHEMA_VERSION):
     return {"facts": list(facts), "schema_version": schema_version}
 
 
@@ -356,7 +358,7 @@ def test_every_response_carries_the_schema_version_header(client, key):
         client.get("/facts", headers=auth(key)),
         client.get("/facts"),
     ):
-        assert response.headers[SCHEMA_VERSION_HEADER] == "0.1.0"
+        assert response.headers[SCHEMA_VERSION_HEADER] == SCHEMA_VERSION
 
 
 def test_unknown_route_uses_the_shared_error_shape(client):
@@ -377,6 +379,7 @@ def test_server_entrypoint_binds_where_the_config_says(monkeypatch, tmp_path):
     monkeypatch.setattr(main_module.uvicorn, "run", fake_run)
     monkeypatch.setenv("AGORA_STORE", "sqlite")
     monkeypatch.setenv("AGORA_SQLITE_PATH", str(tmp_path / "main.sqlite3"))
+    monkeypatch.setenv("AGORA_AUTO_MIGRATE", "1")
     monkeypatch.setenv("AGORA_HOST", "127.0.0.1")
     monkeypatch.setenv("AGORA_PORT", "9999")
 
@@ -386,12 +389,39 @@ def test_server_entrypoint_binds_where_the_config_says(monkeypatch, tmp_path):
     assert calls["app"].title == "MemAgora"
 
 
-def test_auto_migrate_is_off_by_default(tmp_path):
+def test_refuses_to_start_against_an_unmigrated_schema(tmp_path):
+    """Deploying new code before running migrations must fail at startup.
+
+    The alternative is a server that comes up healthy and then fails every
+    write deep inside a driver error — which is what happens if this guard is
+    removed. The message has to say what to run.
+    """
     fresh = SQLiteStore(path=str(tmp_path / "unmigrated.sqlite3"))
-    create_app(config=AgoraServerConfig(store="sqlite"), store=fresh)
-    # No tables created: the app did not migrate behind the operator's back.
-    assert fresh.migrate() == ["001"]
+    with pytest.raises(MigrationError) as exc:
+        create_app(config=AgoraServerConfig(store="sqlite"), store=fresh)
+    assert "agora-admin migrate" in str(exc.value)
+    # And it did not migrate behind the operator's back on the way out.
+    assert fresh.migrate() != []
     fresh.close()
+
+
+def test_a_partially_migrated_schema_is_also_refused(tmp_path):
+    """The guard is about *pending* migrations, not just an empty database."""
+    import agora.storage.sqlite as sqlite_module
+    from agora.storage.base import load_migrations
+
+    store = SQLiteStore(path=str(tmp_path / "old.sqlite3"))
+    real_load = sqlite_module.load_migrations
+    sqlite_module.load_migrations = lambda d: real_load(d)[:1]  # v0.3-era schema
+    try:
+        store.migrate()
+    finally:
+        sqlite_module.load_migrations = real_load
+
+    assert store.pending_migrations() == [v for v, _ in load_migrations(store.migrations_dir)][1:]
+    with pytest.raises(MigrationError):
+        create_app(config=AgoraServerConfig(store="sqlite"), store=store)
+    store.close()
 
 
 def test_auto_migrate_when_enabled(tmp_path):
@@ -399,3 +429,325 @@ def test_auto_migrate_when_enabled(tmp_path):
     create_app(config=AgoraServerConfig(store="sqlite", auto_migrate=True), store=fresh)
     assert fresh.migrate() == []
     fresh.close()
+
+
+# ── POST /ingest ────────────────────────────────────────────────────────
+
+
+def decision(decision_id="d_1", **kwargs):
+    body = {
+        "decision_id": decision_id,
+        "title": "Queue for the notifications service",
+        "chosen": "SQS FIFO",
+        "rationale": "Ordering is required per-recipient.",
+    }
+    body.update(kwargs)
+    return body
+
+
+def ingest_body(*, facts=(), decisions=(), closes=(), schema_version=SCHEMA_VERSION):
+    return {
+        "facts": list(facts),
+        "decisions": list(decisions),
+        "closes": list(closes),
+        "schema_version": schema_version,
+    }
+
+
+def test_ingest_stores_a_decision_and_its_facts_together(client, key):
+    response = client.post(
+        "/ingest",
+        json=ingest_body(
+            decisions=[
+                decision(
+                    alternatives_rejected=["Kafka — too much operational surface"],
+                    constraints=["Stay inside the current AWS account"],
+                    open_questions=["DLQ before launch?"],
+                    decided_on="2026-08-01",
+                )
+            ],
+            facts=[fact("notifications", "uses", "SQS FIFO", decision_id="d_1")],
+        ),
+        headers=auth(key),
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "facts_accepted": 1,
+        "facts_rejected": 0,
+        "decisions_accepted": 1,
+        "decisions_rejected": 0,
+        "facts_closed": 0,
+        "message": None,
+    }
+
+    stored = client.get("/decisions/d_1", headers=auth(key)).json()
+    assert stored["chosen"] == "SQS FIFO"
+    assert stored["alternatives_rejected"] == ["Kafka — too much operational surface"]
+    assert stored["open_questions"] == ["DLQ before launch?"]
+    assert stored["engineer_id"] == "alice"
+
+    linked = client.get("/facts?decision_id=d_1", headers=auth(key)).json()["facts"]
+    assert [f["subject"] for f in linked] == ["notifications"]
+
+
+def test_ingest_counts_the_two_halves_separately(client, key):
+    client.post("/ingest", json=ingest_body(decisions=[decision()]), headers=auth(key))
+    response = client.post(
+        "/ingest",
+        json=ingest_body(
+            decisions=[decision()],  # duplicate id
+            facts=[fact("new-thing")],
+        ),
+        headers=auth(key),
+    )
+    body = response.json()
+    assert (body["facts_accepted"], body["facts_rejected"]) == (1, 0)
+    assert (body["decisions_accepted"], body["decisions_rejected"]) == (0, 1)
+    assert "duplicate_decision_id: 1" in body["message"]
+
+
+def test_ingest_requires_a_key(client):
+    assert client.post("/ingest", json=ingest_body(decisions=[decision()])).status_code == 401
+
+
+def test_ingest_provenance_comes_from_the_key(client, store):
+    beta_key = issue(store, deployment=OTHER_DEPLOYMENT, engineer="bob")
+    client.post(
+        "/ingest",
+        json=ingest_body(decisions=[decision(engineer_id="mallory")]),
+        headers=auth(beta_key),
+    )
+    stored = client.get("/decisions/d_1", headers=auth(beta_key)).json()
+    assert stored["engineer_id"] == "bob"
+
+
+def test_ingest_is_deployment_scoped(client, store, key):
+    beta_key = issue(store, deployment=OTHER_DEPLOYMENT, engineer="bob")
+    client.post("/ingest", json=ingest_body(decisions=[decision()]), headers=auth(beta_key))
+
+    assert client.get("/decisions/d_1", headers=auth(key)).status_code == 404
+    assert client.get("/decisions", headers=auth(key)).json()["decisions"] == []
+
+
+def test_ingest_counts_the_whole_batch_against_the_limit(client, key):
+    response = client.post(
+        "/ingest",
+        json=ingest_body(
+            decisions=[decision(f"d_{i}") for i in range(3)],
+            facts=[fact(f"s{i}") for i in range(3)],  # 6 items, max_batch=5
+        ),
+        headers=auth(key),
+    )
+    assert response.status_code == 413
+
+
+def test_ingest_rejects_a_newer_major_schema_version(client, key):
+    response = client.post(
+        "/ingest",
+        json=ingest_body(decisions=[decision()], schema_version="1.0.0"),
+        headers=auth(key),
+    )
+    assert response.status_code == 400
+    assert response.json()["error"] == "schema_version_unsupported"
+
+
+def test_ingest_rejects_an_over_long_rationale(client, key):
+    """The prose cap is the privacy boundary made enforceable."""
+    response = client.post(
+        "/ingest",
+        json=ingest_body(decisions=[decision(rationale="x" * 4001)]),
+        headers=auth(key),
+    )
+    body = response.json()
+    assert body["decisions_rejected"] == 1
+    assert "rationale_too_long" in body["message"]
+
+
+def test_ingest_ignores_unknown_decision_fields(client, key):
+    response = client.post(
+        "/ingest",
+        json=ingest_body(decisions=[decision(invented_by_a_newer_client=True)]),
+        headers=auth(key),
+    )
+    assert response.json()["decisions_accepted"] == 1
+
+
+def test_ingest_empty_batch(client, key):
+    response = client.post("/ingest", json=ingest_body(), headers=auth(key))
+    assert response.json() == {
+        "facts_accepted": 0,
+        "facts_rejected": 0,
+        "decisions_accepted": 0,
+        "decisions_rejected": 0,
+        "facts_closed": 0,
+        "message": None,
+    }
+
+
+def test_post_facts_still_works_for_pre_decision_clients(client, key):
+    """A v0.3 palace posts to /facts with no decisions and no decision_id."""
+    response = client.post(
+        "/facts", json=payload(fact(), schema_version="0.1.0"), headers=auth(key)
+    )
+    assert response.status_code == 200
+    stored = client.get("/facts", headers=auth(key)).json()["facts"][0]
+    assert stored["decision_id"] is None
+
+
+# ── GET /decisions ──────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def decided(client, key):
+    client.post(
+        "/ingest",
+        json=ingest_body(decisions=[decision(f"d_{i}", title=f"Decision {i}") for i in range(3)]),
+        headers=auth(key),
+    )
+    return key
+
+
+def test_get_decisions_lists_them(client, decided):
+    body = client.get("/decisions", headers=auth(decided)).json()
+    assert {d["decision_id"] for d in body["decisions"]} == {"d_0", "d_1", "d_2"}
+
+
+def test_get_decisions_filters_by_id_list(client, decided):
+    body = client.get("/decisions?ids=d_0,d_2", headers=auth(decided)).json()
+    assert {d["decision_id"] for d in body["decisions"]} == {"d_0", "d_2"}
+
+
+def test_get_decisions_paginates(client, decided):
+    seen, cursor = [], None
+    for _ in range(5):
+        url = "/decisions?limit=2" + (f"&cursor={cursor}" if cursor else "")
+        body = client.get(url, headers=auth(decided)).json()
+        seen.extend(d["decision_id"] for d in body["decisions"])
+        cursor = body["next_cursor"]
+        if not cursor:
+            break
+    assert sorted(seen) == ["d_0", "d_1", "d_2"]
+
+
+def test_get_decisions_bad_cursor_is_a_400(client, decided):
+    response = client.get("/decisions?cursor=%21%21", headers=auth(decided))
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_cursor"
+
+
+def test_get_one_decision_that_does_not_exist(client, decided):
+    response = client.get("/decisions/d_nope", headers=auth(decided))
+    assert response.status_code == 404
+    assert response.json()["error"] == "not_found"
+
+
+def test_decisions_require_a_key(client, decided):
+    assert client.get("/decisions").status_code == 401
+    assert client.get("/decisions/d_0").status_code == 401
+
+
+# ── Superseding through /ingest ─────────────────────────────────────────
+
+
+def test_ingest_closes_the_old_fact_and_records_the_new_one(client, key):
+    client.post(
+        "/ingest",
+        json=ingest_body(
+            facts=[fact("notifications", "uses", "SQS FIFO", valid_from="2026-01-01")]
+        ),
+        headers=auth(key),
+    )
+
+    response = client.post(
+        "/ingest",
+        json=ingest_body(
+            closes=[
+                {
+                    "subject": "notifications",
+                    "predicate": "uses",
+                    "object": "SQS FIFO",
+                    "valid_to": "2026-09-01",
+                }
+            ],
+            facts=[fact("notifications", "uses", "Kinesis", valid_from="2026-09-01")],
+        ),
+        headers=auth(key),
+    )
+    body = response.json()
+    assert (body["facts_accepted"], body["facts_closed"]) == (1, 1)
+
+    # Exactly one current answer, and the old one is still there, bounded.
+    current = client.get("/facts?current=true", headers=auth(key)).json()["facts"]
+    assert [f["object"] for f in current] == ["Kinesis"]
+    historical = client.get("/facts?as_of=2026-05-01", headers=auth(key)).json()["facts"]
+    assert [f["object"] for f in historical] == ["SQS FIFO"]
+
+
+def test_closing_lets_the_replacement_reuse_the_same_object(client, key):
+    """Without the close, re-opening a triple collides with the unique index."""
+    payload_body = ingest_body(facts=[fact("api", "uses", "SQS")])
+    client.post("/ingest", json=payload_body, headers=auth(key))
+
+    blocked = client.post("/ingest", json=payload_body, headers=auth(key)).json()
+    assert blocked["facts_rejected"] == 1
+
+    allowed = client.post(
+        "/ingest",
+        json=ingest_body(
+            closes=[{"subject": "api", "predicate": "uses", "object": "SQS"}],
+            facts=[fact("api", "uses", "SQS", valid_from="2027-01-01")],
+        ),
+        headers=auth(key),
+    ).json()
+    assert (allowed["facts_closed"], allowed["facts_accepted"]) == (1, 1)
+
+
+def test_a_close_that_matches_nothing_is_reported_not_fatal(client, key):
+    response = client.post(
+        "/ingest",
+        json=ingest_body(
+            closes=[{"subject": "ghost", "predicate": "uses", "object": "nothing"}],
+            facts=[fact("real", "uses", "something")],
+        ),
+        headers=auth(key),
+    )
+    body = response.json()
+    assert body["facts_closed"] == 0
+    assert body["facts_accepted"] == 1  # the rest of the batch still lands
+    assert body["facts_rejected"] == 0  # a missed close is not a rejected fact
+    assert "close_matched_nothing: 1" in body["message"]
+
+
+def test_one_deployment_cannot_close_anothers_fact(client, store, key):
+    beta_key = issue(store, deployment=OTHER_DEPLOYMENT, engineer="bob")
+    client.post("/ingest", json=ingest_body(facts=[fact("api", "uses", "SQS")]), headers=auth(key))
+
+    response = client.post(
+        "/ingest",
+        json=ingest_body(closes=[{"subject": "api", "predicate": "uses", "object": "SQS"}]),
+        headers=auth(beta_key),
+    )
+    assert response.json()["facts_closed"] == 0
+    still_open = client.get("/facts?current=true", headers=auth(key)).json()["facts"]
+    assert len(still_open) == 1
+
+
+def test_closes_count_against_the_batch_limit(client, key):
+    response = client.post(
+        "/ingest",
+        json=ingest_body(
+            facts=[fact(f"s{i}") for i in range(3)],
+            closes=[{"subject": f"s{i}", "predicate": "p", "object": "o"} for i in range(3)],
+        ),
+        headers=auth(key),
+    )
+    assert response.status_code == 413
+
+
+def test_closes_require_a_full_triple(client, key):
+    response = client.post(
+        "/ingest",
+        json=ingest_body(closes=[{"subject": "api", "predicate": "uses"}]),
+        headers=auth(key),
+    )
+    assert response.status_code == 422

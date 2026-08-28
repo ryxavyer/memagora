@@ -33,8 +33,10 @@ def run_audit(*, action: Optional[str], **kwargs) -> int:
         return _run_export(output=kwargs.get("output"))
     if action == "diff":
         return _run_diff(strict=kwargs.get("strict", False), limit=kwargs.get("limit", 500))
+    if action == "resend":
+        return _run_resend(dry_run=kwargs.get("dry_run", False), limit=kwargs.get("limit", 500))
     # No action provided — surface help by signalling the caller to print.
-    print("error: audit action required (tail | export | diff)", file=sys.stderr)
+    print("error: audit action required (tail | export | diff | resend)", file=sys.stderr)
     return 2
 
 
@@ -144,11 +146,124 @@ def _run_diff(*, strict: bool, limit: int) -> int:
     return 0
 
 
+def _run_resend(*, dry_run: bool, limit: int) -> int:
+    """Re-send facts the audit log recorded but the agora never received.
+
+    A POST that fails leaves the facts in one place only: the local log, marked
+    ``ok: false``. Nothing retries it, deliberately — a hook is not a queue, and
+    retrying inside one would block an engineer's session on someone else's
+    outage. This is the deliberate, engineer-invoked other half.
+
+    The comparison is the same as ``audit diff``: whatever is local-only gets
+    re-sent. That makes this safe to run twice — the second run finds nothing,
+    and anything the agora already holds is skipped rather than duplicated.
+
+    Exit codes: 0 success (including nothing to do), 2 could not reach the
+    agora, 1 the agora rejected everything offered.
+    """
+    from .config_agora import load_agora_config
+
+    cfg = load_agora_config()
+    if not cfg.enabled:
+        print("No agora endpoint configured — nothing to resend.")
+        return 0
+    if cfg.dry_run:
+        print("Dry-run mode is on, so nothing has been sent from this machine and")
+        print("there is nothing to resend. Set MEMPALACE_AGORA_DRY_RUN=0 first.")
+        return 0
+
+    audit_path = _audit_mod._default_audit_path()
+    entries = _audit_mod.read_audit_entries(audit_path)
+    local = _local_facts(entries)
+
+    remote = _remote_triples(cfg, limit=limit)
+    if remote is None:
+        print(f"error: could not reach the agora at {cfg.endpoint}", file=sys.stderr)
+        return 2
+
+    missing = [fact for key, fact in local.items() if key not in remote]
+    if not missing:
+        print("Nothing to resend — the agora holds everything this machine recorded.")
+        return 0
+
+    print(f"{len(missing)} fact(s) recorded locally are missing from {cfg.endpoint}:")
+    for fact in missing:
+        print(f"  {fact.subject} --{fact.predicate}--> {fact.object}")
+
+    if dry_run:
+        print("\n--dry-run: nothing sent.")
+        return 0
+
+    from .client import post_facts
+
+    response = post_facts(
+        missing,
+        endpoint=cfg.endpoint,
+        api_key=cfg.api_key,
+        timeout=cfg.post_timeout,
+    )
+    _audit_mod.write_audit_entry(
+        {
+            "entry_type": "post",
+            "op": "resent",
+            "session_id": None,
+            "endpoint": cfg.endpoint,
+            "fact_count": len(missing),
+            "accepted": response.accepted,
+            "rejected": response.rejected,
+            "message": response.message,
+            "ok": response.accepted > 0,
+        }
+    )
+
+    print(f"\nresent: {response.accepted} accepted, {response.rejected} rejected")
+    if response.message:
+        print(response.message)
+    return 0 if response.accepted else 1
+
+
+def _local_facts(entries: list) -> dict:
+    """Normalized triple → the ``FactPayload`` that produced it.
+
+    Later entries win, so a fact re-recorded with a correction resends in its
+    corrected form.
+    """
+    from contracts import FactPayload
+
+    facts = {}
+    for entry in entries:
+        if entry.get("entry_type") not in ("classify", "emit"):
+            continue
+        raw = entry.get("fact") or {}
+        subject, predicate, obj = raw.get("subject"), raw.get("predicate"), raw.get("object")
+        if not (subject and predicate and obj):
+            continue
+        key = _normalize_triple(subject, predicate, obj)
+        facts[key] = FactPayload(
+            subject=key[0],
+            predicate=key[1],
+            object=key[2],
+            valid_from=raw.get("valid_from"),
+            valid_to=raw.get("valid_to"),
+            confidence=raw.get("confidence", 1.0),
+            source_session_id=raw.get("source_session_id"),
+            decision_id=raw.get("decision_id"),
+        )
+    return facts
+
+
 def _local_triples(entries: list) -> set:
-    """Every triple the classifier emitted, from ``classify`` entries."""
+    """Every triple this machine recorded, from both write paths.
+
+    ``classify`` entries come from the hook-driven fallback; ``emit`` entries
+    come from an agent calling ``memagora_record_fact`` /
+    ``memagora_record_decision``. Both crossed the same boundary, so both
+    belong in the comparison — reading only one would report the other's facts
+    as missing from the agora.
+    """
     triples = set()
     for entry in entries:
-        if entry.get("entry_type") != "classify":
+        if entry.get("entry_type") not in ("classify", "emit"):
             continue
         fact = entry.get("fact") or {}
         subject, predicate, obj = (
@@ -204,9 +319,10 @@ def _format_triple(triple: tuple) -> str:
 def _format_entry(entry: dict) -> str:
     """One-line pretty format for an audit entry.
 
-    Three shapes:
+    Four shapes:
       - ``entry_type: "drawer_write"`` — palace storage event
-      - ``entry_type: "classify"`` — classifier emitted a fact
+      - ``entry_type: "classify"`` — the hook-driven classifier emitted a fact
+      - ``entry_type: "emit"`` — an agent called a MemAgora emission tool (v0.4)
       - ``entry_type: "post"`` — a batch was sent to the agora (v0.3)
     """
     entry_type = entry.get("entry_type", "?")
@@ -220,6 +336,19 @@ def _format_entry(entry: dict) -> str:
         conf = fact.get("confidence", "?")
         session = entry.get("session_id") or "-"
         return f"{dry}classify  [{session}]  {subj} --{pred}--> {obj}  (conf={conf})"
+
+    if entry_type == "emit":
+        session = entry.get("session_id") or "-"
+        if entry.get("decision"):
+            decision = entry["decision"]
+            title = decision.get("title", "?")
+            return f"{dry}decision  [{session}]  {title}  (id={decision.get('decision_id', '?')})"
+        fact = entry.get("fact") or {}
+        subj = fact.get("subject", "?")
+        pred = fact.get("predicate", "?")
+        obj = fact.get("object", "?")
+        link = f"  (decision={fact['decision_id']})" if fact.get("decision_id") else ""
+        return f"{dry}emit      [{session}]  {subj} --{pred}--> {obj}{link}"
 
     if entry_type == "post":
         session = entry.get("session_id") or "-"

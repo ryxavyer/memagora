@@ -39,7 +39,7 @@ Check it:
 
 ```bash
 curl -s localhost:8000/health
-# {"status":"ok","version":"0.3.0","schema_versions":["0.x"]}
+# {"status":"ok","version":"0.4.0","schema_versions":["0.x"]}
 ```
 
 ### Without Docker
@@ -114,9 +114,11 @@ export MEMPALACE_AGORA_ENDPOINT=https://agora.example.com
 export MEMPALACE_AGORA_API_KEY=ak_1a2b3c4d.9f8e...
 ```
 
-**Leave `dry_run` on first.** With it enabled the classifier runs and every
-fact it would send is written to the local audit log, but no network call is
-made. The engineer can read exactly what would cross before anything does:
+**Leave `dry_run` on first.** With it enabled the agent's emission tools run
+and everything they would send is written to the local audit log, but no
+network call is made — and every tool result says so, so the agent cannot tell
+the engineer their team can see something it did not send. The engineer reads
+exactly what would cross before anything does:
 
 ```bash
 mempalace audit tail -n 20
@@ -128,7 +130,89 @@ and the server's accepted/rejected counts — never the API key.
 
 ```bash
 mempalace audit diff        # what the local log says vs. what the agora holds
+mempalace audit resend      # send what a failed POST left behind
 ```
+
+Finally, tell the deployment's agents to actually emit. An agora stays empty
+otherwise, however deep the sessions get — add a "Team memory" section to the
+team's `CLAUDE.md` as shown in
+[agent-integration.md](agent-integration.md#encouraging-emission-in-a-deployment).
+
+## A worked example
+
+What a first week looks like on a real deployment. The engineer is Alice; the
+service is `notifications-service`.
+
+**Day 1 — a decision gets made.** Alice and her agent settle on a queue. The
+agent calls `memagora_record_decision` before moving on:
+
+```
+title:    Queue for the notifications service
+chosen:   SQS FIFO
+rationale: Per-recipient ordering is a hard requirement; FIFO gives it
+           without application-level sequencing.
+rejected: Kafka — operational surface too large for one queue
+          SNS fan-out — no ordering guarantee
+open:     Do we need a DLQ before launch?
+facts:    notifications-service uses SQS FIFO (from 2026-08-01)
+          notifications-service owned_by platform team
+```
+
+Alice checks what left her machine:
+
+```bash
+mempalace audit tail -n 5
+# decision  [sess-1]  Queue for the notifications service  (id=dec_077ddb…)
+# emit      [sess-1]  notifications-service --uses--> SQS FIFO
+# post      [sess-1]  https://agora.example.com  ok: accepted=3 rejected=0
+```
+
+**Day 3 — Bob picks up a ticket** on the same service, in his own palace, with
+no memory of Alice's conversation. His agent opens the session with team
+context from wake-up, and asks before assuming:
+
+```
+memagora_why(subject="notifications-service", predicate="uses")
+→ notifications-service --uses--> SQS FIFO [2026-08-01 → now]
+  chosen: SQS FIFO
+  rationale: Per-recipient ordering is a hard requirement…
+  alternatives_rejected: Kafka — operational surface too large…
+```
+
+Bob does not re-litigate the queue choice, and does not need Alice.
+
+**Week 3 — the team changes its mind.** Billing needs replay. The agent records
+the new decision and supersedes the old fact in one call:
+
+```
+facts: notifications-service uses Kinesis, supersedes "SQS FIFO",
+       valid_from 2026-09-01
+```
+
+The agora now has exactly one current answer, and the old one is still there,
+bounded:
+
+```bash
+curl -s -H "Authorization: Bearer $KEY" "$AGORA/timeline?subject=notifications-service"
+#  2026-08-01 → 2026-09-01   notifications-service --uses--> SQS FIFO
+#  2026-09-01 → now          notifications-service --uses--> Kinesis
+```
+
+Asking "why do we use a queue this way" in six months returns the Kinesis
+decision, and the timeline shows what it replaced.
+
+**When someone forgets to supersede** — two open facts for the same subject and
+predicate — the read tools report the ambiguity instead of silently picking
+one:
+
+```
+memagora_facts_about(subject="billing")
+→ conflicts: [{subject: billing, predicate: uses, objects: [Stripe, Adyen]}]
+  warning: Two or more open facts share a subject and predicate. The team may
+           have superseded one without closing it — say so rather than picking one.
+```
+
+That is the failure this milestone exists to make visible.
 
 ## Operating it
 
@@ -145,18 +229,23 @@ other state.
 docker compose exec db pg_dump -U agora agora > agora-$(date +%F).sql
 ```
 
-**Upgrades.**
+**Upgrades.** Migrate *before* the new server starts serving:
 
 ```bash
 git pull
 docker compose build agora
+docker compose run --rm agora agora-admin migrate   # one-off container, old server still up
 docker compose up -d agora
-docker compose exec agora agora-admin migrate
 ```
 
 Migrations are numbered `.sql` files under
 `agora/storage/migrations/<backend>/`, applied in filename order and recorded
 in `schema_migrations`. Re-running `migrate` is always safe.
+
+If you restart the server first, it refuses to start and tells you to run
+`agora-admin migrate` — deliberate, and much better than coming up healthy and
+failing every write. `AGORA_AUTO_MIGRATE=1` collapses the two steps, at the
+cost of a restart being able to reshape the schema on its own.
 
 **Client/server skew.** Engineers upgrade on their own schedule. A client one
 release ahead of the server still works: same-major payloads are accepted and
@@ -203,10 +292,14 @@ AGORA_STORE=mystore MYSTORE_DSN=... agora-admin import facts.jsonl
 # 4. Repoint the server and restart.
 ```
 
-Facts keep their ids, ingest timestamps, validity bounds, and per-engineer
-provenance — `import` is a restore, not a re-ingest. It reports anything it
-rejects (a duplicate open triple, a malformed row) on stderr rather than
-failing the whole load.
+Facts and decisions both move, and both keep their ids, ingest timestamps,
+validity bounds, and per-engineer provenance — `import` is a restore, not a
+re-ingest. Decisions are written first so the facts that reference them land
+against something that exists. A dump from before decisions existed (v0.3) has
+no type discriminator and still imports as facts.
+
+It reports anything it rejects (a duplicate open triple, a duplicate decision
+id, a malformed row) on stderr rather than failing the whole load.
 
 API keys do **not** move. Reissue them on the new backend; that is deliberate,
 since a backend swap is a good moment to drop keys nobody uses.

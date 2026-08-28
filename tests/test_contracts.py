@@ -131,8 +131,13 @@ def test_public_exports():
     import contracts
 
     expected = {
+        "DecisionRecord",
+        "FactClose",
         "FactPayload",
+        "GetDecisionsResponse",
         "GetFactsResponse",
+        "IngestRequest",
+        "IngestResponse",
         "PostFactsRequest",
         "PostFactsResponse",
         "SCHEMA_VERSION",

@@ -23,7 +23,7 @@ from typing import Optional
 from .auth import generate_key
 from .config import load_config
 from .storage import AgoraStoreError, build_store
-from .storage.base import StoredFact
+from .storage.base import StoredDecision, StoredFact
 
 
 def cmd_migrate(store, config, args) -> int:
@@ -74,49 +74,78 @@ def cmd_list_keys(store, config, args) -> int:
 def cmd_export(store, config, args) -> int:
     deployment = args.deployment or config.deployment_id
     handle = open(args.output, "w", encoding="utf-8") if args.output else sys.stdout
-    count = 0
+    facts = decisions = 0
     try:
+        # Decisions first, so a straight replay through `import` stores them
+        # before the facts that reference them.
+        for decision in store.export_decisions(deployment_id=deployment):
+            row = dict(dataclasses.asdict(decision), _type="decision")
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+            decisions += 1
         for fact in store.export_facts(deployment_id=deployment):
-            handle.write(json.dumps(dataclasses.asdict(fact), ensure_ascii=False) + "\n")
-            count += 1
+            row = dict(dataclasses.asdict(fact), _type="fact")
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+            facts += 1
     finally:
         if args.output:
             handle.close()
     if args.output:
-        print(f"exported {count} facts to {args.output}")
+        print(f"exported {facts} facts and {decisions} decisions to {args.output}")
     return 0
 
 
 def cmd_import(store, config, args) -> int:
     deployment = args.deployment or config.deployment_id
 
-    # Group by engineer so put_facts' provenance arguments reproduce each
-    # fact's original author rather than flattening them onto one identity.
-    by_engineer: dict[str, list[StoredFact]] = {}
+    # Group by engineer so the put_* provenance arguments reproduce each row's
+    # original author rather than flattening them onto one identity.
+    facts_by_engineer: dict[str, list[StoredFact]] = {}
+    decisions_by_engineer: dict[str, list[StoredDecision]] = {}
+
     with open(args.input, "r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
             line = line.strip()
             if not line:
                 continue
             try:
-                fact = _fact_from_json(line)
-            except (json.JSONDecodeError, TypeError, KeyError) as exc:
+                raw = json.loads(line)
+                # A dump written before decisions existed has no discriminator;
+                # every row in it is a fact.
+                if raw.get("_type", "fact") == "decision":
+                    decision = _from_json(raw, StoredDecision)
+                    decisions_by_engineer.setdefault(decision.engineer_id, []).append(decision)
+                else:
+                    fact = _from_json(raw, StoredFact)
+                    facts_by_engineer.setdefault(fact.engineer_id, []).append(fact)
+            except (json.JSONDecodeError, AttributeError, TypeError, KeyError) as exc:
                 print(
                     f"{args.input}:{line_number}: skipping malformed row ({exc})", file=sys.stderr
                 )
                 continue
-            by_engineer.setdefault(fact.engineer_id, []).append(fact)
 
-    accepted = rejected = 0
     reasons: dict[str, int] = {}
-    for engineer_id, facts in by_engineer.items():
-        result = store.put_facts(deployment_id=deployment, engineer_id=engineer_id, facts=facts)
-        accepted += result.accepted
-        rejected += result.rejected
+
+    def _merge(result) -> int:
         for reason, count in result.reasons.items():
             reasons[reason] = reasons.get(reason, 0) + count
+        return result.accepted
 
-    print(f"imported {accepted} facts into deployment {deployment}")
+    decisions_in = 0
+    for engineer_id, decisions in decisions_by_engineer.items():
+        decisions_in += _merge(
+            store.put_decisions(
+                deployment_id=deployment, engineer_id=engineer_id, decisions=decisions
+            )
+        )
+
+    facts_in = 0
+    for engineer_id, facts in facts_by_engineer.items():
+        facts_in += _merge(
+            store.put_facts(deployment_id=deployment, engineer_id=engineer_id, facts=facts)
+        )
+
+    print(f"imported {facts_in} facts and {decisions_in} decisions into deployment {deployment}")
+    rejected = sum(reasons.values())
     if rejected:
         detail = ", ".join(f"{reason}: {count}" for reason, count in sorted(reasons.items()))
         print(f"rejected {rejected} ({detail})", file=sys.stderr)
@@ -130,14 +159,19 @@ def cmd_stats(store, config, args) -> int:
     print(f"detail     : {health.detail}")
     print(f"deployment : {deployment}")
     print(f"facts      : {store.count_facts(deployment_id=deployment)}")
+    print(f"decisions  : {store.count_decisions(deployment_id=deployment)}")
     print(f"keys       : {len(store.list_api_keys(deployment_id=deployment))}")
     return 0
 
 
-def _fact_from_json(line: str) -> StoredFact:
-    raw = json.loads(line)
-    known = {f.name for f in dataclasses.fields(StoredFact)}
-    return StoredFact(**{k: v for k, v in raw.items() if k in known})
+def _from_json(raw: dict, record_type):
+    """Build a record from an export row, dropping fields it does not define.
+
+    That tolerance is what lets a dump from a newer server load into an older
+    one, and what lets the ``_type`` discriminator be additive.
+    """
+    known = {f.name for f in dataclasses.fields(record_type)}
+    return record_type(**{k: v for k, v in raw.items() if k in known})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -166,10 +200,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     add("list-keys", cmd_list_keys, "List keys issued for a deployment")
 
-    p_export = add("export", cmd_export, "Stream a deployment's facts as JSONL")
+    p_export = add("export", cmd_export, "Stream a deployment's facts and decisions as JSONL")
     p_export.add_argument("--output", help="File to write (default: stdout)")
 
-    p_import = add("import", cmd_import, "Load facts from a JSONL export")
+    p_import = add("import", cmd_import, "Load facts and decisions from a JSONL export")
     p_import.add_argument("input", help="JSONL file produced by `agora-admin export`")
 
     add("stats", cmd_stats, "Show store health and fact counts")

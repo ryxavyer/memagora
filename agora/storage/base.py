@@ -23,7 +23,7 @@ import base64
 import re
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar, Iterator, Optional
@@ -80,6 +80,7 @@ class StoredFact:
     valid_to: Optional[str] = None
     confidence: float = 1.0
     source_session_id: Optional[str] = None
+    decision_id: Optional[str] = None
 
     @property
     def current(self) -> bool:
@@ -102,6 +103,7 @@ class FactQuery:
     as_of: Optional[str] = None
     current_only: bool = False
     min_confidence: Optional[float] = None
+    decision_id: Optional[str] = None
     limit: int = 100
     cursor: Optional[str] = None
 
@@ -111,6 +113,52 @@ class FactPage:
     """One page of facts plus an opaque cursor for the next."""
 
     facts: list[StoredFact]
+    next_cursor: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class StoredDecision:
+    """A decision as the server persists it: the wire record plus provenance.
+
+    The list fields are stored as JSON text and always read back whole — they
+    are narrative, not query surface.
+    """
+
+    decision_id: str
+    deployment_id: str
+    engineer_id: str
+    title: str
+    chosen: str
+    rationale: str
+    schema_version: str
+    recorded_at: str
+    alternatives_rejected: list[str] = field(default_factory=list)
+    constraints: list[str] = field(default_factory=list)
+    open_questions: list[str] = field(default_factory=list)
+    decided_on: Optional[str] = None
+    source_session_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class DecisionQuery:
+    """Filters for ``get_decisions``.
+
+    ``decision_ids`` is how the read path works in practice: find facts about
+    a subject, collect their ``decision_id``s, fetch those decisions. There is
+    no full-text search over rationale, deliberately — that would make the
+    agora a document store.
+    """
+
+    decision_ids: Optional[list[str]] = None
+    limit: int = 100
+    cursor: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class DecisionPage:
+    """One page of decisions plus an opaque cursor for the next."""
+
+    decisions: list[StoredDecision]
     next_cursor: Optional[str] = None
 
 
@@ -165,6 +213,11 @@ class StoreHealth:
 
 MAX_FIELD_LEN = 512
 MAX_SESSION_ID_LEN = 200
+MAX_ID_LEN = 128
+# Prose fields (rationale, and each list entry) get a larger cap than a triple
+# field but still a hard one — see validate_decision.
+MAX_PROSE_LEN = 4000
+MAX_LIST_ITEMS = 20
 
 # ISO-8601 date or partial date: 2026, 2026-01, 2026-01-31. Optionally a full
 # timestamp. Lexicographic comparison is only meaningful for zero-padded
@@ -213,6 +266,61 @@ def validate_fact(fact: StoredFact) -> Optional[str]:
     return None
 
 
+def validate_decision(decision: StoredDecision) -> Optional[str]:
+    """Return a rejection reason, or ``None`` when the decision is storable.
+
+    The length caps are the privacy boundary made enforceable. A decision
+    carries agent-authored prose, which is closer to raw content than a triple
+    is; capping it means a misbehaving client cannot quietly turn the agora
+    into a transcript store, whatever its prompt says.
+    """
+    for name, value in (
+        ("decision_id", decision.decision_id),
+        ("title", decision.title),
+        ("chosen", decision.chosen),
+        ("rationale", decision.rationale),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            return f"empty_{name}"
+
+    if len(decision.decision_id) > MAX_ID_LEN:
+        return "decision_id_too_long"
+    for name, value in (("title", decision.title), ("chosen", decision.chosen)):
+        if len(value) > MAX_FIELD_LEN:
+            return f"{name}_too_long"
+    if len(decision.rationale) > MAX_PROSE_LEN:
+        return "rationale_too_long"
+
+    for name, values in (
+        ("alternatives_rejected", decision.alternatives_rejected),
+        ("constraints", decision.constraints),
+        ("open_questions", decision.open_questions),
+    ):
+        if not isinstance(values, (list, tuple)):
+            return f"malformed_{name}"
+        if len(values) > MAX_LIST_ITEMS:
+            return f"{name}_too_many"
+        for item in values:
+            if not isinstance(item, str):
+                return f"malformed_{name}"
+            if len(item) > MAX_PROSE_LEN:
+                return f"{name}_too_long"
+
+    if decision.decided_on is not None and not _ISO_DATE_RE.match(decision.decided_on):
+        return "malformed_decided_on"
+
+    if (
+        decision.source_session_id is not None
+        and len(decision.source_session_id) > MAX_SESSION_ID_LEN
+    ):
+        return "source_session_id_too_long"
+
+    if not decision.deployment_id or not decision.engineer_id:
+        return "missing_provenance"
+
+    return None
+
+
 def normalize_fact(fact: StoredFact) -> StoredFact:
     """Trim whitespace on the triple. Predicates are lowercased snake_case.
 
@@ -225,6 +333,24 @@ def normalize_fact(fact: StoredFact) -> StoredFact:
         subject=fact.subject.strip(),
         predicate=fact.predicate.strip().lower().replace(" ", "_"),
         object=fact.object.strip(),
+    )
+
+
+def today_iso() -> str:
+    """Default end date for a close, matching the palace KG's ``invalidate``."""
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _normalized_triple(subject: str, predicate: str, obj: str) -> tuple:
+    """Apply write-path normalization to a triple named by a client.
+
+    Without this a close for ``("api", "Owned By", "team")`` would find nothing,
+    because the stored row says ``owned_by``.
+    """
+    return (
+        str(subject).strip(),
+        str(predicate).strip().lower().replace(" ", "_"),
+        str(obj).strip(),
     )
 
 
@@ -267,7 +393,14 @@ def decode_cursor(cursor: str, *, expected: int) -> list[str]:
 
 FACT_COLUMNS = (
     "fact_id, deployment_id, engineer_id, subject, predicate, object, "
-    "schema_version, recorded_at, valid_from, valid_to, confidence, source_session_id"
+    "schema_version, recorded_at, valid_from, valid_to, confidence, source_session_id, "
+    "decision_id"
+)
+
+DECISION_COLUMNS = (
+    "decision_id, deployment_id, engineer_id, title, chosen, rationale, "
+    "schema_version, recorded_at, alternatives_rejected, constraints_json, "
+    "open_questions, decided_on, source_session_id"
 )
 
 
@@ -310,6 +443,10 @@ def build_fact_filters(
     if query.min_confidence is not None:
         clauses.append(f"confidence >= {ph}")
         params.append(query.min_confidence)
+
+    if query.decision_id:
+        clauses.append(f"decision_id = {ph}")
+        params.append(query.decision_id)
 
     return clauses, params
 
@@ -367,6 +504,9 @@ class AgoraStore(ABC):
     name: ClassVar[str]
     spec_version: ClassVar[str] = "1.0"
     capabilities: ClassVar[frozenset[str]] = frozenset()
+    #: Directory of numbered ``.sql`` files this store applies. Set by
+    #: concrete stores; read by :meth:`pending_migrations`.
+    migrations_dir: ClassVar[Optional[Path]] = None
 
     # ── Construction ────────────────────────────────────────────────────
 
@@ -385,6 +525,29 @@ class AgoraStore(ABC):
     @abstractmethod
     def migrate(self) -> list[str]:
         """Apply pending migrations. Idempotent. Returns versions applied."""
+
+    @abstractmethod
+    def applied_migrations(self) -> list[str]:
+        """Versions already recorded in ``schema_migrations``.
+
+        Returns ``[]`` when the schema has never been migrated — a store must
+        answer this on an empty database rather than raising, because the
+        first thing the server does is ask.
+        """
+
+    def pending_migrations(self) -> list[str]:
+        """Versions on disk that this database has not applied yet.
+
+        The server checks this at startup: running new code against an old
+        schema produces confusing per-request failures, and an operator would
+        much rather find out when the container comes up.
+        """
+        if self.migrations_dir is None:
+            return []
+        applied = set(self.applied_migrations())
+        return [
+            version for version, _ in load_migrations(self.migrations_dir) if version not in applied
+        ]
 
     # ── Facts ───────────────────────────────────────────────────────────
 
@@ -415,12 +578,75 @@ class AgoraStore(ABC):
         """Facts ordered by ``valid_from`` ascending, unbounded starts last."""
 
     @abstractmethod
+    def close_fact(
+        self,
+        *,
+        deployment_id: str,
+        subject: str,
+        predicate: str,
+        object: str,
+        valid_to: Optional[str] = None,
+    ) -> bool:
+        """End the open fact matching this triple. Returns False if none was open.
+
+        Sets ``valid_to`` rather than deleting the row, so "this was true until
+        September" stays answerable. Mirrors ``KnowledgeGraph.invalidate`` on
+        the palace side, including its default of today's date.
+
+        Only the open row is touched: closing a triple twice is a no-op that
+        reports False, never a rewrite of history that was already closed.
+        """
+
+    @abstractmethod
     def export_facts(self, *, deployment_id: str) -> Iterator[StoredFact]:
         """Stream every fact for a deployment — the storage-swap migration path."""
 
     @abstractmethod
     def count_facts(self, *, deployment_id: str) -> int:
         """Total facts stored for a deployment."""
+
+    # ── Decisions ───────────────────────────────────────────────────────
+
+    @abstractmethod
+    def put_decisions(
+        self,
+        *,
+        deployment_id: str,
+        engineer_id: str,
+        decisions: list[StoredDecision],
+    ) -> PutResult:
+        """Store a batch of decisions. Partial acceptance, like ``put_facts``.
+
+        A ``decision_id`` that already exists in the deployment is rejected
+        rather than overwritten: a decision is a record of what was decided at
+        a moment, and silently rewriting one would make the agora's history
+        unreliable in exactly the way it exists to prevent.
+        """
+
+    @abstractmethod
+    def get_decisions(self, *, deployment_id: str, query: DecisionQuery) -> DecisionPage:
+        """Decisions matching ``query``, newest ingest first."""
+
+    @abstractmethod
+    def export_decisions(self, *, deployment_id: str) -> Iterator[StoredDecision]:
+        """Stream every decision for a deployment — the storage-swap path."""
+
+    @abstractmethod
+    def count_decisions(self, *, deployment_id: str) -> int:
+        """Total decisions stored for a deployment."""
+
+    def get_decision(self, *, deployment_id: str, decision_id: str) -> Optional[StoredDecision]:
+        """Fetch one decision by id.
+
+        Concrete, not abstract: it is ``get_decisions`` with a single id, and
+        every backend would write the same three lines. Backends that can do
+        better may still override it.
+        """
+        page = self.get_decisions(
+            deployment_id=deployment_id,
+            query=DecisionQuery(decision_ids=[decision_id], limit=1),
+        )
+        return page.decisions[0] if page.decisions else None
 
     # ── API keys ────────────────────────────────────────────────────────
 

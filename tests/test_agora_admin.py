@@ -146,7 +146,7 @@ def test_export_writes_one_json_object_per_fact(env, tmp_path, capsys):
     seed(env)
     out = tmp_path / "facts.jsonl"
     assert main(["export", "--output", str(out)]) == 0
-    assert "exported 2 facts" in capsys.readouterr().out
+    assert "exported 2 facts and 0 decisions" in capsys.readouterr().out
 
     rows = [json.loads(line) for line in out.read_text().splitlines()]
     assert {r["subject"] for r in rows} == {"api", "web"}
@@ -180,7 +180,7 @@ def test_import_preserves_identity_and_provenance(env, tmp_path, monkeypatch, ca
     assert main(["migrate"]) == 0
     capsys.readouterr()
     assert main(["import", str(dump)]) == 0
-    assert "imported 2 facts" in capsys.readouterr().out
+    assert "imported 2 facts and 0 decisions" in capsys.readouterr().out
 
     store = store_for(target)
     migrated = sorted(store.export_facts(deployment_id="team-alpha"), key=lambda f: f.subject)
@@ -278,3 +278,119 @@ def test_postgres_without_a_dsn_fails_clearly(monkeypatch, capsys):
     monkeypatch.delenv("AGORA_DSN", raising=False)
     assert main(["migrate"]) == 1
     assert "AGORA_DSN" in capsys.readouterr().err
+
+
+# ── Decisions travel with the data (v0.4) ───────────────────────────────
+
+
+def seed_decision(db, *, deployment="team-alpha"):
+    from agora.storage.base import StoredDecision, StoredFact, new_fact_id, utc_now_iso
+
+    store = store_for(db)
+    store.migrate()
+    store.put_decisions(
+        deployment_id=deployment,
+        engineer_id="alice",
+        decisions=[
+            StoredDecision(
+                decision_id="dec-1",
+                deployment_id=deployment,
+                engineer_id="alice",
+                title="Queue choice",
+                chosen="SQS FIFO",
+                rationale="Ordering is required.",
+                schema_version="0.2.0",
+                recorded_at=utc_now_iso(),
+                alternatives_rejected=["Kafka"],
+                constraints=["Stay on AWS"],
+                open_questions=["DLQ?"],
+                decided_on="2026-08-01",
+            )
+        ],
+    )
+    store.put_facts(
+        deployment_id=deployment,
+        engineer_id="alice",
+        facts=[
+            StoredFact(
+                fact_id=new_fact_id(),
+                deployment_id=deployment,
+                engineer_id="alice",
+                subject="notifications",
+                predicate="uses",
+                object="SQS FIFO",
+                schema_version="0.2.0",
+                recorded_at=utc_now_iso(),
+                decision_id="dec-1",
+            )
+        ],
+    )
+    store.close()
+
+
+def test_export_includes_decisions_with_a_type_discriminator(env, tmp_path, capsys):
+    seed_decision(env)
+    out = tmp_path / "dump.jsonl"
+    assert main(["export", "--output", str(out)]) == 0
+    assert "exported 1 facts and 1 decisions" in capsys.readouterr().out
+
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    # Decisions first, so a replay stores them before the facts that link to them.
+    assert [r["_type"] for r in rows] == ["decision", "fact"]
+    assert rows[0]["alternatives_rejected"] == ["Kafka"]
+    assert rows[1]["decision_id"] == "dec-1"
+
+
+def test_backend_swap_carries_decisions_and_their_links(env, tmp_path, monkeypatch, capsys):
+    seed_decision(env)
+    dump = tmp_path / "dump.jsonl"
+    main(["export", "--output", str(dump)])
+    capsys.readouterr()
+
+    target = tmp_path / "target.sqlite3"
+    monkeypatch.setenv("AGORA_SQLITE_PATH", str(target))
+    main(["migrate"])
+    capsys.readouterr()
+    assert main(["import", str(dump)]) == 0
+    assert "imported 1 facts and 1 decisions" in capsys.readouterr().out
+
+    store = store_for(target)
+    decision = store.get_decision(deployment_id="team-alpha", decision_id="dec-1")
+    fact = next(iter(store.export_facts(deployment_id="team-alpha")))
+    store.close()
+
+    assert decision.title == "Queue choice"
+    assert decision.engineer_id == "alice"
+    assert decision.open_questions == ["DLQ?"]
+    assert decision.decided_on == "2026-08-01"
+    assert fact.decision_id == "dec-1"
+
+
+def test_a_v03_dump_without_discriminators_still_imports(env, tmp_path, capsys):
+    """Rows written before decisions existed have no `_type`; they are facts."""
+    main(["migrate"])
+    dump = tmp_path / "legacy.jsonl"
+    dump.write_text(
+        json.dumps(
+            {
+                "fact_id": "f_legacy",
+                "deployment_id": "team-alpha",
+                "engineer_id": "alice",
+                "subject": "api",
+                "predicate": "owned_by",
+                "object": "platform",
+                "schema_version": "0.1.0",
+                "recorded_at": "2026-05-01T00:00:00+00:00",
+            }
+        )
+    )
+    assert main(["import", str(dump)]) == 0
+    assert "imported 1 facts and 0 decisions" in capsys.readouterr().out
+
+
+def test_stats_counts_decisions(env, capsys):
+    seed_decision(env)
+    assert main(["stats"]) == 0
+    out = capsys.readouterr().out
+    assert "facts      : 1" in out
+    assert "decisions  : 1" in out

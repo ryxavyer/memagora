@@ -96,44 +96,60 @@ Goal: a deployable team server with one reference storage backend.
 
 **Verification:** 1754 palace-side tests passing (3 skipped), plus 213 agora tests — the storage conformance suite runs against both SQLite and a live Postgres, at 95% coverage of `agora/`. `ruff check` and `ruff format --check` clean. End to end on a real deployment: `docker compose up` → `agora-admin migrate` → `issue-key` → `mempalace classify` POSTs classified facts → `GET /facts` returns them → `mempalace audit diff` reconciles → a second deployment's key sees none of it.
 
-## v0.4 — Round trip
+## v0.4 — Round trip (shipped 2026-08-28)
 
 Goal: agents drive agora population directly, agora facts feed back into the agent experience, and the graph tells the truth about time.
 
-**Agent-driven emission (primary path):**
+**Decisions taken before implementation:**
 
-MemAgora does not manage its own LLM pipeline. The agent calling the tools is the intelligence. Agora population happens through the agent explicitly calling emission MCP tools during a session — no separate LLM call re-processes content the agent already understood.
+- **A decision gets its own table, not decomposed triples.** Title, rationale, alternatives, constraints, and open questions do not fit `(subject, predicate, object)` without stuffing paragraphs into a column meant for an entity name. `AgoraStore` widened once, deliberately, before any third party implements it.
+- **Emission tools honor `dry_run`.** It defaults to `True`, so the primary population path is off until an engineer turns it on, and every tool result says in words that nothing was sent.
 
-- New MCP emission tools: `memagora_record_fact`, `memagora_record_decision`. These are the primary agora population path.
-- `memagora_record_decision` accepts the `DecisionRecord` shape — title, chosen approach, rationale, alternatives rejected, constraints, open questions — and links to the atomic facts it produced via a shared `decision_id`. This is the shape that answers "why was this decision made" when an agent queries the agora in a future session.
-- `DecisionRecord` added to `contracts/facts.py` alongside `FactPayload`; `FactPayload` gets an optional `decision_id`. New `POST /ingest` endpoint accepts a mixed batch; existing `POST /facts` preserved for backwards compatibility.
-- The hook-based `mempalace classify` path (v0.2) is retained as a fallback for agents that do not call emission tools, but is no longer the primary path.
+**Wire format — `contracts` 0.1.0 → 0.3.0:**
+
+- ✓ `DecisionRecord` (0.2.0) — `decision_id`, `title`, `chosen`, `rationale`, `alternatives_rejected`, `constraints`, `open_questions`, `decided_on`. `FactPayload` gained optional `decision_id`; `IngestRequest` / `IngestResponse` / `GetDecisionsResponse` added.
+- ✓ `FactClose` (0.3.0) — a request to end a fact, naming the triple in full because fact ids are server-generated and no palace has ever seen one. `IngestRequest.closes`, `IngestResponse.facts_closed`.
+- ✓ Both bumps exercised the version negotiation v0.3 built: a 0.1.0 client still posts to `POST /facts` and reads back facts with `decision_id: null`.
+
+**Agent-driven emission — the primary path:**
+
+- ✓ `mempalace/mcp_agora.py` holds six MCP tools, merged into the palace's registry: `memagora_record_fact`, `memagora_record_decision`, `memagora_facts_about`, `memagora_timeline`, `memagora_decisions_about`, `memagora_why`. Kept in their own module because they talk to the team server, not the local palace.
+- ✓ `memagora_record_decision` takes the facts a decision produced and links them automatically, so one call records both the conclusion and the argument.
+- ✓ Every emission is mirrored to the audit log (`entry_type: "emit"`) *before* anything crosses, and `dry_run` short-circuits the network call while leaving the local record intact. Tool results say "recorded locally; NOT sent" in words the agent must repeat.
+- ✓ Nothing raises: an unreachable agora, a rejection, even an unexpected exception from the client comes back as an error dict. A team outage cannot end an engineer's session.
+- ✓ The hook-based `mempalace classify` path (v0.2) is retained as a fallback and is no longer primary.
+
+**Superseding facts — the gap v0.3 left:**
+
+- ✓ `AgoraStore.close_fact` sets `valid_to` on the open row matching a triple, mirroring the palace KG's `invalidate` including its default of today. Facts are never deleted, so "we used SQS until September" stays answerable.
+- ✓ `POST /ingest` applies a batch in a fixed order — decisions, then closes, then facts — so a replacement never collides with the open row it supersedes and a linked fact never dangles.
+- ✓ `memagora_record_fact(..., supersedes="SQS FIFO")` closes the old fact and opens the new one in one request, and warns when nothing matched rather than reporting success.
+- ✓ Read-side contradiction surfacing: two open facts sharing a subject and predicate are reported by `memagora_facts_about` and `memagora_why` rather than resolved. Co-ownership is legitimate; the server cannot tell it from a stale answer, so it says so.
 
 **Reading the agora back:**
 
-- Extend `client.get_facts` with the filters the server already implements — subject/predicate/object, `as_of`, `current`, `min_confidence`. v0.3 shipped it with `limit`/`cursor` only, which is enough for `audit diff` and not enough for anything an agent would ask.
-- MCP query tools: `memagora_facts_about`, `memagora_timeline`, `memagora_decisions_about`, `memagora_why(subject, predicate)`. Discoverable via `mempalace_list_agents` pattern; no system-prompt bloat.
-- Wake-up integration: team agora facts surface alongside palace context at session start. Time-bounded, scoped by current project/wing. **Open design question first:** the agora stores subject/predicate/object and the palace organizes by wing/room/drawer. Nothing maps the two today. Decide that mapping before writing the integration — the alternative is a scoping rule that quietly returns the wrong team's context.
+- ✓ `client.get_facts` gained every filter the server implements; `client.get_timeline`, `client.get_decisions` and `client.post_ingest` added.
+- ✓ `GET /decisions`, `GET /decisions/{id}`, and `decision_id` as a `/facts` filter.
+- ✓ Wake-up integration: `mempalace wake-up` appends a team block, `--no-team` suppresses it. **The mapping question is resolved and written down** — a wing name matches a fact *subject* verbatim, and because that is narrow, a second unscoped block of the most recently recorded facts is included. "Time-bounded" is by count, since the agora returns newest-ingest-first. Never blocks: no agora, or an unreachable one, leaves wake-up exactly as it was.
 
-**Superseding facts** — the gap v0.3 left, and the one that matters most before a pilot:
+**Operational debt cleared:**
 
-The temporal model is fully built server-side (`valid_from` / `valid_to`, as-of queries, one-open-row-per-triple) and nothing uses it. There is no way to close a fact: no PATCH, no DELETE, no equivalent of the palace KG's `invalidate()`. So "we moved off SQS FIFO to Kinesis" writes a *second* open row — a different object is a different triple, so the uniqueness index does not catch it — and both decisions sit there current and contradictory. For a system whose value proposition is institutional memory, last year's decision quietly outliving last month's is the failure mode that matters.
+- ✓ `mempalace audit resend` — the other half of the no-offline-queue decision. Compares the local log against the agora exactly as `audit diff` does and re-sends what is missing, so it is safe to run twice. `--dry-run` lists without sending.
+- ✓ Optional `psycopg_pool` pooling behind `AGORA_POOL_SIZE` (the `pool` extra), confined to `PostgresStore._connection`, degrading loudly to one connection when the package is absent. The conformance suite runs a third time through the pool — if pooling changed any observable behavior, that suite would say so.
+- ✓ [docs/agent-integration.md](docs/agent-integration.md) — what belongs in the agora, why a decision without its alternatives is just an assertion, where the prose boundary sits, and the `CLAUDE.md` snippet a deployment needs so its agents actually emit.
+- ✓ [docs/architecture.md](docs/architecture.md) — the two deployment units, the three boundary mechanisms, request ordering, the temporal model, and what the system deliberately does not do.
+- ✓ [docs/deployment.md](docs/deployment.md) gained the worked example: a decision on day 1, a teammate reading it on day 3 without asking anyone, a supersede in week 3, and what a forgotten supersede looks like.
 
-- Agents emit `valid_to` when recording a reversal via `memagora_record_fact`, and `valid_from` when a fact carries a known date.
-- A server-side close operation, so a superseding fact ends the one it replaces in the same request rather than racing it.
-- Failing that, or alongside it: surface contradictions at read time, so an agent that finds two open facts on the same `(subject, predicate)` says so rather than picking one.
+**Also fixed, found while verifying:**
 
-**Operational debt carried out of v0.3:**
+- ✓ The server refuses to start against an un-migrated schema (`pending_migrations` checked in `create_app`). Reproducing the real v0.3→v0.4 upgrade showed new code on an old schema comes up *healthy* and then fails every write inside a driver error. `docs/deployment.md` had the upgrade order backwards too.
+- ✓ `agora-admin export` was about to silently drop decisions, which would have made a storage-backend swap lose exactly the reasoning this milestone adds. Both records now travel with a `_type` discriminator; a v0.3 dump without one still imports.
+- ✓ `client.post_facts` was dropping `decision_id` on the wire — a hand-written field list, now `dataclasses.asdict`.
+- ✓ `audit diff` and `audit resend` read both `classify` and `emit` entries; reading only one would have reported the other path's facts as missing.
 
-- **No offline retry.** A failed POST is recorded in the audit log (`entry_type: "post"`, `ok: false`) and dropped. `audit diff` surfaces the gap; `mempalace audit resend` is the missing half.
-- **One Postgres connection**, lock-guarded — correct for a single uvicorn worker, thin for a pilot with real concurrency. `psycopg_pool` is a drop-in change confined to `PostgresStore._connection`.
-- **CI has never actually run.** It did not trigger on `master` until v0.3 fixed the workflow triggers, so every v0.1–v0.3 "tests passing" claim was verified locally. The first push to `master` is the real check; treat a red first run as expected rather than alarming.
-- **`docs/architecture.md` and `docs/agent-integration.md`** are promised by [AGENTS.md](AGENTS.md) and do not exist. The agent integration doc is the load-bearing one: it needs to explain how agents should call the emission tools, what belongs in a `DecisionRecord`, and how to configure a deployment's CLAUDE.md to encourage emission at decision points.
+**Verification:** 1888 palace-side tests passing (3 skipped), agora tests at 96% coverage, `ruff` clean. The storage conformance suite runs three times — SQLite, Postgres, pooled Postgres. End to end against the containerized server on real Postgres: dry-run recording locally and sending nothing; a decision and its facts emitted; a second engineer's `memagora_why` returning the rationale and rejected alternatives; a supersede leaving one current answer with the timeline intact; a forgotten supersede surfacing as a reported conflict; the server killed mid-session leaving the tool erroring rather than raising; and `audit diff` → `audit resend` closing the gap when it came back.
 
-**Then:**
-
-- End-to-end deployment guide with a worked example — [docs/deployment.md](docs/deployment.md) covers self-hosting mechanics as of v0.3; what is missing is the narrative walkthrough with a real team's facts in it.
-- First pilot deployment. Gated on the supersede work and on TLS in front of the server (API keys are bearer tokens).
+**Deliberately not done here:** the first pilot deployment, which is gated on TLS in front of the server (API keys are bearer tokens) and on a team willing to run it.
 
 ## v1.0 — General availability + the great rename
 
@@ -142,7 +158,7 @@ Goal: production-ready for self-hosted teams, and a final scrub of `mempalace` f
 **Product:**
 
 - Hardened MCP emission and query tools with documented guidance for each deployment's agent instructions.
-- At least one alternative agora storage backend implementation (proves the abstraction).
+- A **third-party** agora storage backend, installed through the `agora.stores` entry point from outside this repo. In-tree SQLite and pooled Postgres already prove the interface has more than one shape (v0.3, v0.4); what is unproven is that someone else can implement it without patching core.
 - Stability guarantees on the contracts schema and the agora HTTP contract.
 - Documentation: architecture, agent-integration, deployment, operator runbook.
 

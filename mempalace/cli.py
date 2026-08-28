@@ -585,6 +585,16 @@ def cmd_wakeup(args):
     stack = MemoryStack(palace_path=palace_path)
 
     text = stack.wake_up(wing=args.wing)
+
+    # Team context is additive and never blocking: no agora configured, or an
+    # unreachable one, leaves wake-up exactly as it was before MemAgora.
+    if not getattr(args, "no_team", False):
+        from .mcp_agora import team_context
+
+        team = team_context(wing=args.wing)
+        if team:
+            text = f"{text}\n\n{team}"
+
     tokens = len(text) // 4
     print(f"Wake-up text (~{tokens} tokens):")
     print("=" * 50)
@@ -789,6 +799,7 @@ def cmd_audit(args):
         limit=getattr(args, "limit", 10),
         output=getattr(args, "output", None),
         strict=getattr(args, "strict", False),
+        dry_run=getattr(args, "dry_run", False),
     )
 
 
@@ -1066,7 +1077,16 @@ def main():
     p_wakeup.add_argument(
         "--wing",
         default=None,
-        help="(Reserved; ignored — wing-scoped context is query-driven via search/recall)",
+        help=(
+            "Project/wing name. Ignored by the palace layer (wing-scoped palace context is "
+            "query-driven via search/recall); used by the team agora to surface facts whose "
+            "subject is this name."
+        ),
+    )
+    p_wakeup.add_argument(
+        "--no-team",
+        action="store_true",
+        help="Skip the team agora block even when an endpoint is configured",
     )
 
     # split
@@ -1157,6 +1177,22 @@ def main():
         "--strict",
         action="store_true",
         help="Exit non-zero when facts exist locally but not in the agora",
+    )
+    p_audit_resend = audit_sub.add_parser(
+        "resend",
+        help="Re-send facts the audit log recorded but the agora never received",
+    )
+    p_audit_resend.add_argument(
+        "-n",
+        "--limit",
+        type=int,
+        default=500,
+        help="Maximum facts to fetch from the agora when comparing (default: 500)",
+    )
+    p_audit_resend.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List what would be resent without sending it",
     )
 
     # repair

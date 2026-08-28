@@ -1752,6 +1752,14 @@ TOOLS = {
     },
 }
 
+# MemAgora team tools live in their own module (mcp_agora.py) — they talk to the
+# team server, not the local palace, and keeping them separate is what lets the
+# palace half stay agora-agnostic. They are merged in rather than duplicated so
+# there is one tool registry for the protocol layer to serve.
+from .mcp_agora import TOOLS as _AGORA_TOOLS  # noqa: E402
+
+TOOLS.update(_AGORA_TOOLS)
+
 
 SUPPORTED_PROTOCOL_VERSIONS = [
     "2025-11-25",

@@ -11,6 +11,7 @@ statement. That is adequate for a single-process uvicorn worker; teams
 expecting concurrent writers should run Postgres.
 """
 
+import json
 import sqlite3
 import threading
 from dataclasses import replace
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 from .base import (
+    DECISION_COLUMNS,
     FACT_COLUMNS,
     AgoraStore,
     ApiKeyRecord,
@@ -25,16 +27,22 @@ from .base import (
     FactQuery,
     MigrationError,
     NULL_SORT_KEY,
+    DecisionPage,
+    DecisionQuery,
     PutResult,
     StoreClosedError,
+    StoredDecision,
     StoredFact,
     StoreHealth,
     build_fact_filters,
     decode_cursor,
     encode_cursor,
     load_migrations,
+    _normalized_triple,
     normalize_fact,
     split_statements,
+    today_iso,
+    validate_decision,
     validate_fact,
 )
 
@@ -44,6 +52,7 @@ _MIGRATIONS_DIR = Path(__file__).parent / "migrations" / "sqlite"
 class SQLiteStore(AgoraStore):
     name = "sqlite"
     spec_version = "1.0"
+    migrations_dir = _MIGRATIONS_DIR
     capabilities = frozenset(
         {
             "supports_export",
@@ -86,6 +95,19 @@ class SQLiteStore(AgoraStore):
             self._closed = True
 
     # ── Schema ──────────────────────────────────────────────────────────
+
+    def applied_migrations(self) -> list[str]:
+        with self._lock:
+            conn = self._connect()
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+            ).fetchone()
+            if row is None:
+                return []
+            return [
+                r["version"]
+                for r in conn.execute("SELECT version FROM schema_migrations ORDER BY version")
+            ]
 
     def migrate(self) -> list[str]:
         with self._lock:
@@ -141,7 +163,7 @@ class SQLiteStore(AgoraStore):
                     with conn:
                         conn.execute(
                             f"INSERT INTO facts ({FACT_COLUMNS}) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             (
                                 fact.fact_id,
                                 fact.deployment_id,
@@ -155,6 +177,7 @@ class SQLiteStore(AgoraStore):
                                 fact.valid_to,
                                 float(fact.confidence),
                                 fact.source_session_id,
+                                fact.decision_id,
                             ),
                         )
                 except sqlite3.IntegrityError:
@@ -224,6 +247,26 @@ class SQLiteStore(AgoraStore):
             cursor_of=lambda f: (f.valid_from or NULL_SORT_KEY, f.fact_id),
         )
 
+    def close_fact(
+        self,
+        *,
+        deployment_id: str,
+        subject: str,
+        predicate: str,
+        object: str,
+        valid_to: Optional[str] = None,
+    ) -> bool:
+        subject, predicate, obj = _normalized_triple(subject, predicate, object)
+        with self._lock:
+            conn = self._connect()
+            with conn:
+                cur = conn.execute(
+                    "UPDATE facts SET valid_to = ? WHERE deployment_id = ? AND subject = ? "
+                    "AND predicate = ? AND object = ? AND valid_to IS NULL",
+                    (valid_to or today_iso(), deployment_id, subject, predicate, obj),
+                )
+            return cur.rowcount > 0
+
     def export_facts(self, *, deployment_id: str) -> Iterator[StoredFact]:
         with self._lock:
             conn = self._connect()
@@ -240,6 +283,92 @@ class SQLiteStore(AgoraStore):
             conn = self._connect()
             row = conn.execute(
                 "SELECT COUNT(*) AS n FROM facts WHERE deployment_id = ?", (deployment_id,)
+            ).fetchone()
+        return int(row["n"])
+
+    # ── Decisions ───────────────────────────────────────────────────────
+
+    def put_decisions(
+        self,
+        *,
+        deployment_id: str,
+        engineer_id: str,
+        decisions: list,
+    ) -> PutResult:
+        accepted = 0
+        reasons: dict = {}
+
+        with self._lock:
+            conn = self._connect()
+            for raw in decisions:
+                decision = replace(raw, deployment_id=deployment_id, engineer_id=engineer_id)
+                reason = validate_decision(decision)
+                if reason:
+                    reasons[reason] = reasons.get(reason, 0) + 1
+                    continue
+                try:
+                    with conn:
+                        conn.execute(
+                            f"INSERT INTO decisions ({DECISION_COLUMNS}) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            _decision_row(decision),
+                        )
+                except sqlite3.IntegrityError:
+                    reasons["duplicate_decision_id"] = reasons.get("duplicate_decision_id", 0) + 1
+                    continue
+                accepted += 1
+
+        return PutResult(accepted=accepted, rejected=sum(reasons.values()), reasons=reasons)
+
+    def get_decisions(self, *, deployment_id: str, query: DecisionQuery) -> DecisionPage:
+        clauses = ["deployment_id = ?"]
+        params: list = [deployment_id]
+
+        if query.decision_ids is not None:
+            if not query.decision_ids:
+                return DecisionPage(decisions=[], next_cursor=None)
+            placeholders = ", ".join("?" for _ in query.decision_ids)
+            clauses.append(f"decision_id IN ({placeholders})")
+            params.extend(query.decision_ids)
+
+        if query.cursor:
+            recorded_at, decision_id = decode_cursor(query.cursor, expected=2)
+            clauses.append("(recorded_at < ? OR (recorded_at = ? AND decision_id < ?))")
+            params.extend([recorded_at, recorded_at, decision_id])
+
+        limit = max(1, query.limit)
+        sql = (
+            f"SELECT {DECISION_COLUMNS} FROM decisions WHERE {' AND '.join(clauses)} "
+            "ORDER BY recorded_at DESC, decision_id DESC LIMIT ?"
+        )
+        with self._lock:
+            conn = self._connect()
+            rows = conn.execute(sql, (*params, limit + 1)).fetchall()
+
+        decisions = [_to_decision(r) for r in rows[:limit]]
+        next_cursor = (
+            encode_cursor(decisions[-1].recorded_at, decisions[-1].decision_id)
+            if len(rows) > limit and decisions
+            else None
+        )
+        return DecisionPage(decisions=decisions, next_cursor=next_cursor)
+
+    def export_decisions(self, *, deployment_id: str):
+        with self._lock:
+            conn = self._connect()
+            rows = conn.execute(
+                f"SELECT {DECISION_COLUMNS} FROM decisions WHERE deployment_id = ? "
+                "ORDER BY recorded_at ASC, decision_id ASC",
+                (deployment_id,),
+            ).fetchall()
+        for row in rows:
+            yield _to_decision(row)
+
+    def count_decisions(self, *, deployment_id: str) -> int:
+        with self._lock:
+            conn = self._connect()
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM decisions WHERE deployment_id = ?", (deployment_id,)
             ).fetchone()
         return int(row["n"])
 
@@ -324,6 +453,55 @@ def _to_fact(row) -> StoredFact:
         valid_from=row["valid_from"],
         valid_to=row["valid_to"],
         confidence=float(row["confidence"]),
+        source_session_id=row["source_session_id"],
+        decision_id=row["decision_id"],
+    )
+
+
+def _decision_row(decision: StoredDecision) -> tuple:
+    """Flatten a decision into DECISION_COLUMNS order. Lists become JSON text."""
+    return (
+        decision.decision_id,
+        decision.deployment_id,
+        decision.engineer_id,
+        decision.title,
+        decision.chosen,
+        decision.rationale,
+        decision.schema_version,
+        decision.recorded_at,
+        json.dumps(list(decision.alternatives_rejected), ensure_ascii=False),
+        json.dumps(list(decision.constraints), ensure_ascii=False),
+        json.dumps(list(decision.open_questions), ensure_ascii=False),
+        decision.decided_on,
+        decision.source_session_id,
+    )
+
+
+def _json_list(raw) -> list:
+    """Decode a JSON list column, tolerating a row written by hand."""
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+def _to_decision(row) -> StoredDecision:
+    return StoredDecision(
+        decision_id=row["decision_id"],
+        deployment_id=row["deployment_id"],
+        engineer_id=row["engineer_id"],
+        title=row["title"],
+        chosen=row["chosen"],
+        rationale=row["rationale"],
+        schema_version=row["schema_version"],
+        recorded_at=row["recorded_at"],
+        alternatives_rejected=_json_list(row["alternatives_rejected"]),
+        constraints=_json_list(row["constraints_json"]),
+        open_questions=_json_list(row["open_questions"]),
+        decided_on=row["decided_on"],
         source_session_id=row["source_session_id"],
     )
 

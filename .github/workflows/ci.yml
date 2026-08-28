@@ -72,7 +72,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: 'pip'
-      - run: pip install -e ".[dev]" ./contracts ./agora
+      - run: pip install -e ".[dev]" ./contracts "./agora[dev]"
       # `-m "postgres or not postgres"` overrides the default deselection in
       # pyproject.toml so the conformance suite runs against both stores in one
       # pass — which is also what makes the coverage number meaningful. The 90%

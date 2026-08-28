@@ -23,10 +23,13 @@ import pytest
 
 from .base import (
     ApiKeyRecord,
+    DecisionQuery,
     FactQuery,
     StoreClosedError,
+    StoredDecision,
     StoredFact,
     new_fact_id,
+    today_iso,
     utc_now_iso,
 )
 
@@ -54,6 +57,26 @@ def make_fact(subject, predicate, obj, **kwargs) -> StoredFact:
     }
     fields.update(kwargs)
     return StoredFact(**fields)
+
+
+def make_decision(decision_id="d_1", **kwargs) -> StoredDecision:
+    """Build a decision with server-side fields filled in.
+
+    Provenance is deliberately wrong here too — ``put_decisions`` must take it
+    from its arguments, not from the record.
+    """
+    fields = {
+        "decision_id": decision_id,
+        "deployment_id": "client-supplied-junk",
+        "engineer_id": "client-supplied-junk",
+        "title": "Queue for the notifications service",
+        "chosen": "SQS FIFO",
+        "rationale": "Ordering is required per-recipient; FIFO gives it without app-level work.",
+        "schema_version": "0.2.0",
+        "recorded_at": utc_now_iso(),
+    }
+    fields.update(kwargs)
+    return StoredDecision(**fields)
 
 
 class AbstractStoreContractSuite:
@@ -407,6 +430,313 @@ class AbstractStoreContractSuite:
                 )
             )
         assert {k.key_id for k in store.list_api_keys(deployment_id=DEPLOYMENT)} == {"ak_1", "ak_2"}
+
+    # ── Decisions ───────────────────────────────────────────────────────
+
+    def test_decision_round_trip(self, store):
+        result = store.put_decisions(
+            deployment_id=DEPLOYMENT,
+            engineer_id=ENGINEER,
+            decisions=[
+                make_decision(
+                    alternatives_rejected=["Kafka — operational cost too high for one queue"],
+                    constraints=["Must stay inside the existing AWS account"],
+                    open_questions=["Do we need a DLQ before launch?"],
+                    decided_on="2026-08-01",
+                    source_session_id="sess-1",
+                )
+            ],
+        )
+        assert (result.accepted, result.rejected) == (1, 0)
+
+        decision = store.get_decision(deployment_id=DEPLOYMENT, decision_id="d_1")
+        assert decision is not None
+        assert decision.title == "Queue for the notifications service"
+        assert decision.chosen == "SQS FIFO"
+        assert decision.alternatives_rejected == ["Kafka — operational cost too high for one queue"]
+        assert decision.constraints == ["Must stay inside the existing AWS account"]
+        assert decision.open_questions == ["Do we need a DLQ before launch?"]
+        assert decision.decided_on == "2026-08-01"
+        assert decision.source_session_id == "sess-1"
+
+    def test_decision_provenance_comes_from_arguments(self, store):
+        store.put_decisions(
+            deployment_id=DEPLOYMENT, engineer_id=ENGINEER, decisions=[make_decision()]
+        )
+        decision = store.get_decision(deployment_id=DEPLOYMENT, decision_id="d_1")
+        assert decision.deployment_id == DEPLOYMENT
+        assert decision.engineer_id == ENGINEER
+
+    def test_empty_decision_lists_round_trip_as_lists(self, store):
+        store.put_decisions(
+            deployment_id=DEPLOYMENT, engineer_id=ENGINEER, decisions=[make_decision()]
+        )
+        decision = store.get_decision(deployment_id=DEPLOYMENT, decision_id="d_1")
+        assert decision.alternatives_rejected == []
+        assert decision.constraints == []
+        assert decision.open_questions == []
+
+    def test_decisions_are_deployment_scoped(self, store):
+        store.put_decisions(
+            deployment_id=DEPLOYMENT, engineer_id=ENGINEER, decisions=[make_decision("d_alpha")]
+        )
+        store.put_decisions(
+            deployment_id=OTHER_DEPLOYMENT, engineer_id="bob", decisions=[make_decision("d_beta")]
+        )
+
+        assert store.get_decision(deployment_id=DEPLOYMENT, decision_id="d_beta") is None
+        assert store.count_decisions(deployment_id=DEPLOYMENT) == 1
+        exported = list(store.export_decisions(deployment_id=OTHER_DEPLOYMENT))
+        assert [d.decision_id for d in exported] == ["d_beta"]
+
+    def test_same_decision_id_in_two_deployments_is_not_a_duplicate(self, store):
+        first = store.put_decisions(
+            deployment_id=DEPLOYMENT, engineer_id=ENGINEER, decisions=[make_decision("d_shared")]
+        )
+        second = store.put_decisions(
+            deployment_id=OTHER_DEPLOYMENT, engineer_id="bob", decisions=[make_decision("d_shared")]
+        )
+        assert first.accepted == 1 and second.accepted == 1
+
+    def test_duplicate_decision_id_is_rejected_not_overwritten(self, store):
+        store.put_decisions(
+            deployment_id=DEPLOYMENT, engineer_id=ENGINEER, decisions=[make_decision()]
+        )
+        result = store.put_decisions(
+            deployment_id=DEPLOYMENT,
+            engineer_id=ENGINEER,
+            decisions=[make_decision(title="Rewritten history")],
+        )
+        assert (result.accepted, result.rejected) == (0, 1)
+        assert result.reasons == {"duplicate_decision_id": 1}
+
+        unchanged = store.get_decision(deployment_id=DEPLOYMENT, decision_id="d_1")
+        assert unchanged.title == "Queue for the notifications service"
+
+    @pytest.mark.parametrize(
+        "kwargs,reason",
+        [
+            ({"decision_id": ""}, "empty_decision_id"),
+            ({"title": "   "}, "empty_title"),
+            ({"chosen": ""}, "empty_chosen"),
+            ({"rationale": ""}, "empty_rationale"),
+            ({"title": "x" * 513}, "title_too_long"),
+            ({"rationale": "x" * 4001}, "rationale_too_long"),
+            ({"constraints": ["x" * 4001]}, "constraints_too_long"),
+            ({"open_questions": ["q"] * 21}, "open_questions_too_many"),
+            ({"alternatives_rejected": [42]}, "malformed_alternatives_rejected"),
+            ({"decided_on": "last tuesday"}, "malformed_decided_on"),
+        ],
+    )
+    def test_invalid_decisions_are_rejected_with_a_reason(self, store, kwargs, reason):
+        kwargs = dict(kwargs)
+        decision_id = kwargs.pop("decision_id", "d_1")
+        result = store.put_decisions(
+            deployment_id=DEPLOYMENT,
+            engineer_id=ENGINEER,
+            decisions=[make_decision(decision_id, **kwargs)],
+        )
+        assert result.accepted == 0
+        assert result.reasons == {reason: 1}
+
+    def test_get_decisions_by_id_set(self, store):
+        store.put_decisions(
+            deployment_id=DEPLOYMENT,
+            engineer_id=ENGINEER,
+            decisions=[make_decision(f"d_{i}") for i in range(4)],
+        )
+        page = store.get_decisions(
+            deployment_id=DEPLOYMENT, query=DecisionQuery(decision_ids=["d_1", "d_3"])
+        )
+        assert {d.decision_id for d in page.decisions} == {"d_1", "d_3"}
+
+    def test_get_decisions_with_an_empty_id_set_returns_nothing(self, store):
+        """An empty filter means "none of them", never "all of them"."""
+        store.put_decisions(
+            deployment_id=DEPLOYMENT, engineer_id=ENGINEER, decisions=[make_decision()]
+        )
+        page = store.get_decisions(deployment_id=DEPLOYMENT, query=DecisionQuery(decision_ids=[]))
+        assert page.decisions == []
+
+    def test_decisions_paginate(self, store):
+        store.put_decisions(
+            deployment_id=DEPLOYMENT,
+            engineer_id=ENGINEER,
+            decisions=[make_decision(f"d_{i:02d}") for i in range(12)],
+        )
+        seen, cursor = [], None
+        for _ in range(10):
+            page = store.get_decisions(
+                deployment_id=DEPLOYMENT, query=DecisionQuery(limit=5, cursor=cursor)
+            )
+            seen.extend(d.decision_id for d in page.decisions)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        assert len(seen) == 12 and len(set(seen)) == 12
+
+    def test_unknown_decision_is_none(self, store):
+        assert store.get_decision(deployment_id=DEPLOYMENT, decision_id="d_missing") is None
+
+    def test_unicode_survives_a_decision_round_trip(self, store):
+        store.put_decisions(
+            deployment_id=DEPLOYMENT,
+            engineer_id=ENGINEER,
+            decisions=[make_decision(title="Café — 決定", constraints=["μ-service boundary"])],
+        )
+        decision = store.get_decision(deployment_id=DEPLOYMENT, decision_id="d_1")
+        assert decision.title == "Café — 決定"
+        assert decision.constraints == ["μ-service boundary"]
+
+    # ── Facts linked to decisions ───────────────────────────────────────
+
+    def test_facts_carry_a_decision_id(self, store):
+        store.put_facts(
+            deployment_id=DEPLOYMENT,
+            engineer_id=ENGINEER,
+            facts=[
+                make_fact("notifications", "uses", "SQS FIFO", decision_id="d_1"),
+                make_fact("web", "owned_by", "frontend"),
+            ],
+        )
+        linked = store.get_facts(deployment_id=DEPLOYMENT, query=FactQuery(decision_id="d_1")).facts
+        assert [f.subject for f in linked] == ["notifications"]
+        assert linked[0].decision_id == "d_1"
+
+    def test_facts_without_a_decision_have_none(self, store):
+        store.put_facts(
+            deployment_id=DEPLOYMENT, engineer_id=ENGINEER, facts=[make_fact("a", "b", "c")]
+        )
+        fact = store.get_facts(deployment_id=DEPLOYMENT, query=FactQuery()).facts[0]
+        assert fact.decision_id is None
+
+    def test_decision_id_survives_export(self, store):
+        store.put_facts(
+            deployment_id=DEPLOYMENT,
+            engineer_id=ENGINEER,
+            facts=[make_fact("a", "b", "c", decision_id="d_1")],
+        )
+        exported = list(store.export_facts(deployment_id=DEPLOYMENT))
+        assert exported[0].decision_id == "d_1"
+
+    # ── Closing facts (superseding) ─────────────────────────────────────
+
+    def test_close_fact_ends_the_open_row(self, store):
+        store.put_facts(
+            deployment_id=DEPLOYMENT,
+            engineer_id=ENGINEER,
+            facts=[make_fact("api", "uses", "SQS FIFO", valid_from="2026-01-01")],
+        )
+        assert (
+            store.close_fact(
+                deployment_id=DEPLOYMENT,
+                subject="api",
+                predicate="uses",
+                object="SQS FIFO",
+                valid_to="2026-09-01",
+            )
+            is True
+        )
+        fact = store.get_facts(deployment_id=DEPLOYMENT, query=FactQuery()).facts[0]
+        assert fact.valid_to == "2026-09-01"
+        assert fact.current is False
+
+    def test_closing_frees_the_triple_for_its_replacement(self, store):
+        """The point of closing: the open-triple index no longer blocks a re-open."""
+        store.put_facts(
+            deployment_id=DEPLOYMENT, engineer_id=ENGINEER, facts=[make_fact("api", "uses", "SQS")]
+        )
+        store.close_fact(
+            deployment_id=DEPLOYMENT,
+            subject="api",
+            predicate="uses",
+            object="SQS",
+            valid_to="2026-09-01",
+        )
+        result = store.put_facts(
+            deployment_id=DEPLOYMENT,
+            engineer_id=ENGINEER,
+            facts=[make_fact("api", "uses", "SQS", valid_from="2027-01-01")],
+        )
+        assert result.accepted == 1
+
+    def test_close_defaults_to_today(self, store):
+        store.put_facts(
+            deployment_id=DEPLOYMENT, engineer_id=ENGINEER, facts=[make_fact("api", "uses", "SQS")]
+        )
+        store.close_fact(deployment_id=DEPLOYMENT, subject="api", predicate="uses", object="SQS")
+        fact = store.get_facts(deployment_id=DEPLOYMENT, query=FactQuery()).facts[0]
+        assert fact.valid_to == today_iso()
+
+    def test_closing_twice_reports_that_nothing_changed(self, store):
+        store.put_facts(
+            deployment_id=DEPLOYMENT, engineer_id=ENGINEER, facts=[make_fact("api", "uses", "SQS")]
+        )
+        assert store.close_fact(
+            deployment_id=DEPLOYMENT,
+            subject="api",
+            predicate="uses",
+            object="SQS",
+            valid_to="2026-01-01",
+        )
+        assert not store.close_fact(
+            deployment_id=DEPLOYMENT,
+            subject="api",
+            predicate="uses",
+            object="SQS",
+            valid_to="2026-06-01",
+        )
+        # The first close stands; history is not rewritten.
+        fact = store.get_facts(deployment_id=DEPLOYMENT, query=FactQuery()).facts[0]
+        assert fact.valid_to == "2026-01-01"
+
+    def test_close_normalizes_the_triple_it_is_given(self, store):
+        store.put_facts(
+            deployment_id=DEPLOYMENT,
+            engineer_id=ENGINEER,
+            facts=[make_fact("api", "Owned By", "platform")],
+        )
+        assert store.close_fact(
+            deployment_id=DEPLOYMENT, subject=" api ", predicate="Owned By", object=" platform "
+        )
+
+    def test_close_matching_nothing_is_false_not_an_error(self, store):
+        assert not store.close_fact(
+            deployment_id=DEPLOYMENT, subject="ghost", predicate="p", object="o"
+        )
+
+    def test_one_deployment_cannot_close_anothers_fact(self, store):
+        store.put_facts(
+            deployment_id=OTHER_DEPLOYMENT,
+            engineer_id="bob",
+            facts=[make_fact("api", "uses", "SQS")],
+        )
+        assert not store.close_fact(
+            deployment_id=DEPLOYMENT, subject="api", predicate="uses", object="SQS"
+        )
+        beta = store.get_facts(deployment_id=OTHER_DEPLOYMENT, query=FactQuery()).facts[0]
+        assert beta.current is True
+
+    def test_a_closed_fact_still_answers_as_of_queries(self, store):
+        """Closing is not deleting — that is why validity bounds exist."""
+        store.put_facts(
+            deployment_id=DEPLOYMENT,
+            engineer_id=ENGINEER,
+            facts=[make_fact("api", "uses", "SQS", valid_from="2026-01-01")],
+        )
+        store.close_fact(
+            deployment_id=DEPLOYMENT,
+            subject="api",
+            predicate="uses",
+            object="SQS",
+            valid_to="2026-09-01",
+        )
+        during = store.get_facts(
+            deployment_id=DEPLOYMENT, query=FactQuery(as_of="2026-05-01")
+        ).facts
+        after = store.get_facts(deployment_id=DEPLOYMENT, query=FactQuery(as_of="2026-12-01")).facts
+        assert [f.object for f in during] == ["SQS"]
+        assert after == []
 
     # ── Lifecycle ───────────────────────────────────────────────────────
 

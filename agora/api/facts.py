@@ -42,33 +42,13 @@ def post_facts(
         raise bad_request("schema_version_unsupported", str(exc)) from exc
 
     reasons: dict[str, int] = {}
-    pending: list[StoredFact] = []
-    recorded_at = utc_now_iso()
-
-    for item in body.facts:
-        version = resolve_fact_version(item.schema_version, body.schema_version)
-        try:
-            check_supported(version)
-        except UnsupportedSchemaVersion:
-            reasons["schema_version_unsupported"] = reasons.get("schema_version_unsupported", 0) + 1
-            continue
-        pending.append(
-            StoredFact(
-                fact_id=new_fact_id(),
-                # Provenance from the key, never from the body.
-                deployment_id=principal.deployment_id,
-                engineer_id=principal.engineer_id,
-                subject=item.subject,
-                predicate=item.predicate,
-                object=item.object,
-                schema_version=version,
-                recorded_at=recorded_at,
-                valid_from=item.valid_from,
-                valid_to=item.valid_to,
-                confidence=item.confidence,
-                source_session_id=item.source_session_id,
-            )
-        )
+    pending = prepare_facts(
+        body.facts,
+        envelope_version=body.schema_version,
+        principal=principal,
+        recorded_at=utc_now_iso(),
+        reasons=reasons,
+    )
 
     result = store.put_facts(
         deployment_id=principal.deployment_id,
@@ -83,7 +63,7 @@ def post_facts(
     return PostFactsOut(
         accepted=result.accepted,
         rejected=rejected,
-        message=_summarize(reasons) if reasons else None,
+        message=summarize_reasons(reasons) if reasons else None,
     )
 
 
@@ -97,6 +77,7 @@ def get_facts(
     as_of: Optional[str] = Query(None, description="ISO date; interval is inclusive both ends"),
     current: bool = Query(False, description="Only facts with no end bound"),
     min_confidence: Optional[float] = Query(None, ge=0.0, le=1.0),
+    decision_id: Optional[str] = Query(None, description="Facts produced by one decision"),
     limit: Optional[int] = Query(None, ge=1),
     cursor: Optional[str] = None,
 ) -> GetFactsOut:
@@ -111,6 +92,7 @@ def get_facts(
         as_of=as_of,
         current_only=current,
         min_confidence=min_confidence,
+        decision_id=decision_id,
         limit=min(limit or config.default_limit, config.max_limit),
         cursor=cursor,
     )
@@ -126,7 +108,50 @@ def get_facts(
     )
 
 
-def _summarize(reasons: dict[str, int]) -> str:
+def prepare_facts(
+    items,
+    *,
+    envelope_version: str,
+    principal: Principal,
+    recorded_at: str,
+    reasons: dict,
+) -> list[StoredFact]:
+    """Turn wire facts into storable ones, counting per-fact version failures.
+
+    Shared by ``POST /facts`` and ``POST /ingest`` so the two paths cannot
+    disagree about provenance or version resolution. ``reasons`` is mutated in
+    place — the caller merges it with whatever the store reports.
+    """
+    prepared: list[StoredFact] = []
+    for item in items:
+        version = resolve_fact_version(item.schema_version, envelope_version)
+        try:
+            check_supported(version)
+        except UnsupportedSchemaVersion:
+            reasons["schema_version_unsupported"] = reasons.get("schema_version_unsupported", 0) + 1
+            continue
+        prepared.append(
+            StoredFact(
+                fact_id=new_fact_id(),
+                # Provenance from the key, never from the body.
+                deployment_id=principal.deployment_id,
+                engineer_id=principal.engineer_id,
+                subject=item.subject,
+                predicate=item.predicate,
+                object=item.object,
+                schema_version=version,
+                recorded_at=recorded_at,
+                valid_from=item.valid_from,
+                valid_to=item.valid_to,
+                confidence=item.confidence,
+                source_session_id=item.source_session_id,
+                decision_id=item.decision_id,
+            )
+        )
+    return prepared
+
+
+def summarize_reasons(reasons: dict) -> str:
     """Human-readable rejection summary, stable ordering for testability."""
     parts = [f"{reason}: {count}" for reason, count in sorted(reasons.items())]
     return "rejected — " + ", ".join(parts)

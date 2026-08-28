@@ -22,6 +22,9 @@ DEFAULT_MAX_LIMIT = 500
 DEFAULT_PAGE_LIMIT = 100
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8000
+# 0 = no pool: one lock-guarded connection, which is right for a single worker
+# serving a handful of engineers. Set it when requests start overlapping.
+DEFAULT_POOL_SIZE = 0
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
@@ -53,6 +56,7 @@ class AgoraServerConfig:
     sqlite_path: str = DEFAULT_SQLITE_PATH
     deployment_id: str = DEFAULT_DEPLOYMENT_ID
     auto_migrate: bool = False
+    pool_size: int = 0
     max_batch: int = DEFAULT_MAX_BATCH
     max_limit: int = DEFAULT_MAX_LIMIT
     default_limit: int = DEFAULT_PAGE_LIMIT
@@ -76,6 +80,7 @@ def load_config(env: Optional[dict] = None) -> AgoraServerConfig:
         sqlite_path=src.get("AGORA_SQLITE_PATH") or DEFAULT_SQLITE_PATH,
         deployment_id=src.get("AGORA_DEPLOYMENT_ID") or DEFAULT_DEPLOYMENT_ID,
         auto_migrate=_coerce_bool(src.get("AGORA_AUTO_MIGRATE"), default=False),
+        pool_size=_coerce_int(src.get("AGORA_POOL_SIZE"), default=0),
         max_batch=_coerce_int(src.get("AGORA_MAX_BATCH"), default=DEFAULT_MAX_BATCH),
         max_limit=_coerce_int(src.get("AGORA_MAX_LIMIT"), default=DEFAULT_MAX_LIMIT),
         default_limit=_coerce_int(src.get("AGORA_PAGE_LIMIT"), default=DEFAULT_PAGE_LIMIT),

@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from contracts import FactPayload
+from contracts import SCHEMA_VERSION, FactPayload
 from mempalace.client import get_facts, post_facts
 
 
@@ -110,7 +110,7 @@ def test_post_sends_the_wire_format_to_the_facts_path(agora):
     assert sent["headers"]["Authorization"] == "Bearer ak_1.secret"
     assert sent["headers"]["Content-Type"] == "application/json"
 
-    assert sent["body"]["schema_version"] == "0.1.0"
+    assert sent["body"]["schema_version"] == SCHEMA_VERSION
     assert sent["body"]["facts"] == [
         {
             "subject": "api",
@@ -120,7 +120,8 @@ def test_post_sends_the_wire_format_to_the_facts_path(agora):
             "valid_to": None,
             "confidence": 0.9,
             "source_session_id": "sess-1",
-            "schema_version": "0.1.0",
+            "decision_id": None,
+            "schema_version": SCHEMA_VERSION,
         }
     ]
 
@@ -207,7 +208,7 @@ def test_get_facts_parses_the_response_into_contract_objects(agora):
                 "valid_to": None,
                 "confidence": 0.9,
                 "source_session_id": "sess-1",
-                "schema_version": "0.1.0",
+                "schema_version": SCHEMA_VERSION,
                 # Additive server-side fields the wire contract does not define:
                 "fact_id": "f_abc",
                 "engineer_id": "alice",

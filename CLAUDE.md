@@ -65,11 +65,13 @@ MemAgora is designed as a **deployable template** — the same codebase, deploye
            │  emits facts and decisions via MCP tools during the session
            ▼
     MemAgora MCP tools ───── palace: verbatim read/write, local only
-                             agora:  memagora_record_fact,
-                                     memagora_record_decision,
-                                     memagora_facts_about,
-                                     memagora_decisions_about,
-                                     memagora_why
+                             agora writes: memagora_record_fact
+                                           (supersedes= closes the old one),
+                                           memagora_record_decision
+                             agora reads:  memagora_facts_about,
+                                           memagora_timeline,
+                                           memagora_decisions_about,
+                                           memagora_why
            │
            ▼
     Team Agora Server ─────── pluggable storage layer (Postgres default,
@@ -104,6 +106,7 @@ Two top-level code directories matching the two deployment units, plus a neutral
     ├── (audited, pruned MemPalace foundation per FOUNDATION.md —
     │    mcp_server.py, miner.py, searcher.py, backends/, …)
     ├── backend.py           # Wraps palace.backends.chroma with classifier integration
+    ├── mcp_agora.py         # Agora MCP tools (emission + query) and wake-up team context
     ├── classifier.py        # Fallback hook-based classifier (agent-driven emission via MCP tools is primary)
     ├── client.py            # HTTP client posting to agora server
     ├── audit.py             # Local append-only audit log of team writes
@@ -117,7 +120,7 @@ Two top-level code directories matching the two deployment units, plus a neutral
     ├── auth.py              # API key mint/verify; key → deployment + engineer
     ├── models.py            # pydantic mirrors of contracts/ (parity-tested)
     ├── versioning.py        # Schema-version negotiation
-    ├── api/                 # HTTP endpoints (facts, timeline, health)
+    ├── api/                 # HTTP endpoints (facts, ingest, decisions, timeline, health)
     ├── storage/             # AgoraStore interface + postgres/sqlite + migrations
     ├── Dockerfile
     ├── docker-compose.yml
@@ -146,14 +149,17 @@ Two top-level code directories matching the two deployment units, plus a neutral
 
 Paths below use the target post-rename structure. Until v1.0, substitute `mempalace/` for `palace/`.
 
-- **Agora emission MCP tools**: `palace/mcp_server.py` — `memagora_record_fact`, `memagora_record_decision`, `memagora_facts_about`, `memagora_decisions_about`, `memagora_why`
+- **Agora MCP tools**: `palace/mcp_agora.py` — emission (`memagora_record_fact`, `memagora_record_decision`) and query (`memagora_facts_about`, `memagora_timeline`, `memagora_decisions_about`, `memagora_why`), merged into `palace/mcp_server.py`'s registry. Also holds `team_context()`, which wake-up appends.
 - **Classifier (fallback)**: `palace/classifier.py` — hook-invoked, for agents that do not call emission tools directly
+- **Superseding a fact**: `memagora_record_fact(..., supersedes=...)` → `POST /ingest` `closes` → `AgoraStore.close_fact`. Facts are never deleted; closing sets `valid_to`.
 - **Backend integration**: `palace/backend.py` — implements `palace/backends/base.py`, wraps `palace/backends/chroma.py`
 - **HTTP client to agora**: `palace/client.py`
 - **Local audit log**: `palace/audit.py`
 - **Wire format / shared contracts**: `contracts/` — fact payload, API request/response shapes; imported by both palace and agora
 - **Server endpoints**: `agora/api/` — one module per resource; add a router in `agora/app.py`
 - **Storage abstraction**: `agora/storage/base.py` — subclass `AgoraStore`, register under the `agora.stores` entry-point group, and prove it by subclassing `agora.storage.testing.AbstractStoreContractSuite`
+- **Agent guidance**: [docs/agent-integration.md](./docs/agent-integration.md) — what belongs in the agora, the prose boundary, and the `CLAUDE.md` snippet a deployment needs so its agents emit at all
+- **System overview**: [docs/architecture.md](./docs/architecture.md)
 - **Server auth**: `agora/auth.py` — the API key is the only source of `deployment_id` / `engineer_id`
 - **Deployment config**: `agora/docker-compose.yml` and [docs/deployment.md](./docs/deployment.md)
 
@@ -170,7 +176,7 @@ For tasks involving the inherited MemPalace plumbing (mining, search, the local 
       # Selectively cherry-pick or merge into a feature branch off master, then PR into master
 
   We do not auto-track upstream. Every advance is gated on a contract review.
-- **Agent emission discipline** — Agora quality depends on the agent actually calling the emission tools. An agent that never calls `memagora_record_decision` produces no rationale in the agora regardless of session depth. Each deployment's CLAUDE.md (or equivalent agent instructions) should explicitly encourage emission at decision and design points.
+- **Agent emission discipline** — Agora quality depends on the agent actually calling the emission tools. An agent that never calls `memagora_record_decision` produces no rationale in the agora regardless of session depth. Each deployment's CLAUDE.md (or equivalent agent instructions) should explicitly encourage emission at decision and design points; [docs/agent-integration.md](./docs/agent-integration.md) has the snippet. Nothing in the system detects the absence, which is why it stays on this list.
 - **Privacy expectations** — Engineers need confidence that the local-vs-team boundary is real. A single incident of raw content reaching the agora would damage trust. Agents must only emit structured facts and decisions via the emission tools — never raw conversation content.
 - **Inherited brittleness** — Several known bugs and design issues exist in the MemPalace code MemAgora inherits. Most do not affect MemAgora directly because the affected subsystems aren't on MemAgora's path. See [FOUNDATION.md](./FOUNDATION.md) for the audit and the current strip/keep status of each subsystem.
 

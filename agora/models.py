@@ -16,9 +16,9 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from contracts import SCHEMA_VERSION, FactPayload
+from contracts import SCHEMA_VERSION, DecisionRecord, FactClose, FactPayload
 
-from .storage.base import StoredFact
+from .storage.base import StoredDecision, StoredFact
 
 
 class FactIn(BaseModel):
@@ -37,6 +37,7 @@ class FactIn(BaseModel):
     valid_to: Optional[str] = None
     confidence: float = 1.0
     source_session_id: Optional[str] = None
+    decision_id: Optional[str] = None
     schema_version: Optional[str] = None
 
     def to_contract(self, *, schema_version: Optional[str] = None) -> FactPayload:
@@ -48,6 +49,7 @@ class FactIn(BaseModel):
             valid_to=self.valid_to,
             confidence=self.confidence,
             source_session_id=self.source_session_id,
+            decision_id=self.decision_id,
             schema_version=schema_version or self.schema_version or SCHEMA_VERSION,
         )
 
@@ -84,6 +86,7 @@ class FactOut(BaseModel):
     valid_to: Optional[str] = None
     confidence: float = 1.0
     source_session_id: Optional[str] = None
+    decision_id: Optional[str] = None
     schema_version: str = SCHEMA_VERSION
     # Additive, server-side:
     fact_id: str
@@ -101,12 +104,129 @@ class FactOut(BaseModel):
             valid_to=fact.valid_to,
             confidence=fact.confidence,
             source_session_id=fact.source_session_id,
+            decision_id=fact.decision_id,
             schema_version=fact.schema_version,
             fact_id=fact.fact_id,
             engineer_id=fact.engineer_id,
             recorded_at=fact.recorded_at,
             current=fact.current,
         )
+
+
+class DecisionIn(BaseModel):
+    """One decision as it arrives on the wire. Mirrors ``contracts.DecisionRecord``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    decision_id: str
+    title: str
+    chosen: str
+    rationale: str
+    alternatives_rejected: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    decided_on: Optional[str] = None
+    source_session_id: Optional[str] = None
+    schema_version: Optional[str] = None
+
+    def to_contract(self, *, schema_version: Optional[str] = None) -> DecisionRecord:
+        return DecisionRecord(
+            decision_id=self.decision_id,
+            title=self.title,
+            chosen=self.chosen,
+            rationale=self.rationale,
+            alternatives_rejected=list(self.alternatives_rejected),
+            constraints=list(self.constraints),
+            open_questions=list(self.open_questions),
+            decided_on=self.decided_on,
+            source_session_id=self.source_session_id,
+            schema_version=schema_version or self.schema_version or SCHEMA_VERSION,
+        )
+
+
+class DecisionOut(BaseModel):
+    """A stored decision on the way out: the wire record plus provenance."""
+
+    decision_id: str
+    title: str
+    chosen: str
+    rationale: str
+    alternatives_rejected: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    decided_on: Optional[str] = None
+    source_session_id: Optional[str] = None
+    schema_version: str = SCHEMA_VERSION
+    # Additive, server-side:
+    engineer_id: str
+    recorded_at: str
+
+    @classmethod
+    def from_stored(cls, decision: StoredDecision) -> "DecisionOut":
+        return cls(
+            decision_id=decision.decision_id,
+            title=decision.title,
+            chosen=decision.chosen,
+            rationale=decision.rationale,
+            alternatives_rejected=list(decision.alternatives_rejected),
+            constraints=list(decision.constraints),
+            open_questions=list(decision.open_questions),
+            decided_on=decision.decided_on,
+            source_session_id=decision.source_session_id,
+            schema_version=decision.schema_version,
+            engineer_id=decision.engineer_id,
+            recorded_at=decision.recorded_at,
+        )
+
+
+class FactCloseIn(BaseModel):
+    """One fact to end. Mirrors ``contracts.FactClose``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    subject: str
+    predicate: str
+    object: str
+    valid_to: Optional[str] = None
+    schema_version: Optional[str] = None
+
+    def to_contract(self, *, schema_version: Optional[str] = None) -> FactClose:
+        return FactClose(
+            subject=self.subject,
+            predicate=self.predicate,
+            object=self.object,
+            valid_to=self.valid_to,
+            schema_version=schema_version or self.schema_version or SCHEMA_VERSION,
+        )
+
+
+class IngestIn(BaseModel):
+    """Body of ``POST /ingest`` — mirrors ``contracts.IngestRequest``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    facts: list[FactIn] = Field(default_factory=list)
+    decisions: list[DecisionIn] = Field(default_factory=list)
+    closes: list[FactCloseIn] = Field(default_factory=list)
+    schema_version: str = SCHEMA_VERSION
+
+
+class IngestOut(BaseModel):
+    """Mirrors ``contracts.IngestResponse``."""
+
+    facts_accepted: int
+    facts_rejected: int
+    decisions_accepted: int
+    decisions_rejected: int
+    facts_closed: int = 0
+    message: Optional[str] = None
+
+
+class GetDecisionsOut(BaseModel):
+    """Mirrors ``contracts.GetDecisionsResponse``."""
+
+    decisions: list[DecisionOut]
+    next_cursor: Optional[str] = None
 
 
 class GetFactsOut(BaseModel):
